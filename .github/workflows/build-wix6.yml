@@ -1,0 +1,155 @@
+name: Build WiX 6.0.2 (CTech)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 330
+    env:
+      DOTNET_NOLOGO: "true"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+      NUGET_XMLDOC_MODE: skip
+      RuntimeTestsEnabled: "false"
+      WixOfficialBuild: "false"
+      SignBuild: "false"
+
+    steps:
+      - name: Checkout WiX 6.0.2 source
+        uses: actions/checkout@v4
+        with:
+          repository: wixtoolset/wix
+          ref: v6.0.2
+          fetch-depth: 0
+          path: wix-source
+
+      - name: Verify exact upstream revision
+        shell: pwsh
+        working-directory: wix-source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sha = (git rev-parse HEAD).Trim()
+          Write-Host "Source SHA: $sha"
+          if ($sha -ne 'b3f340393117094a75ea8ced77f2357e4aa095e7') {
+            throw "Unexpected WiX 6.0.2 source SHA: $sha"
+          }
+          if ((git describe --tags --exact-match).Trim() -ne 'v6.0.2') {
+            throw "Unexpected source tag"
+          }
+
+      - name: Prepare CTech package version before build
+        shell: pwsh
+        working-directory: wix-source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $templates = @(
+            @{ Path = 'src/internal/SetBuildNumber/SomeVerInfo.props.pp'; Find = '<PackageVersion>{major}.{minor}.{patch}{dashlabel}</PackageVersion>'; Replace = '<PackageVersion>{major}.{minor}.{patch}{dashlabel}-ctech</PackageVersion>' },
+            @{ Path = 'src/internal/SetBuildNumber/Directory.Packages.props.pp'; Find = 'Version="{packageversion}"'; Replace = 'Version="{packageversion}-ctech"' },
+            @{ Path = 'src/internal/SetBuildNumber/global.json.pp'; Find = '"WixToolset.Sdk": "{packageversion}"'; Replace = '"WixToolset.Sdk": "{packageversion}-ctech"' }
+          )
+          foreach ($entry in $templates) {
+            $path = Join-Path $PWD $entry.Path
+            $original = [System.IO.File]::ReadAllText($path)
+            if (-not $original.Contains($entry.Find)) {
+              throw "Expected version template not found: $($entry.Path)"
+            }
+            $updated = $original.Replace($entry.Find, $entry.Replace)
+            [System.IO.File]::WriteAllText($path, $updated)
+            Write-Host "Patched: $($entry.Path)"
+          }
+          git diff --check
+          git diff --stat
+
+      - name: Build from source (Release)
+        shell: cmd
+        working-directory: wix-source
+        run: devbuild.cmd release
+
+      - name: Inspect and verify produced NuGet packages
+        shell: pwsh
+        working-directory: wix-source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $dir = Join-Path $PWD 'build/artifacts'
+          if (-not (Test-Path $dir)) { throw "Missing build/artifacts" }
+          $packages = @(Get-ChildItem $dir -File | Where-Object { $_.Name -match '\.(nupkg|snupkg)$' })
+          if (-not $packages.Count) { throw "No NuGet packages produced" }
+          $results = foreach ($pkg in $packages) {
+            if ($pkg.Extension -eq '.snupkg') {
+              [pscustomobject]@{ file=$pkg.Name; packageId=$null; version=$null; sha256=(Get-FileHash $pkg.FullName -Algorithm SHA256).Hash; dependencies=@() }
+              continue
+            }
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($pkg.FullName)
+            try {
+              $nuspec = @($zip.Entries | Where-Object { $_.FullName -match '^[^/]+\.nuspec$' })
+              if ($nuspec.Count -ne 1) { throw "Expected exactly one nuspec in $($pkg.Name)" }
+              $reader = [System.IO.StreamReader]::new($nuspec[0].Open())
+              try { [xml]$xml = $reader.ReadToEnd() } finally { $reader.Dispose() }
+              $meta = $xml.package.metadata
+              $id = [string]$meta.id
+              $ver = [string]$meta.version
+              if ($ver -ne '6.0.2-ctech') { throw "Unexpected version $id $ver in $($pkg.Name)" }
+              $deps = @($xml.SelectNodes('//*[local-name()="dependency"]') | ForEach-Object {
+                [pscustomobject]@{ id = $_.GetAttribute('id'); version = $_.GetAttribute('version') }
+              })
+              foreach ($dep in $deps) {
+                if ($dep.id -match '^(?i:WixToolset\.|WixInternal\.|wix$)' -and
+                    $dep.version -notmatch '6\.0\.2-ctech') {
+                  throw "Unpatched WiX dependency: $id -> $($dep.id) $($dep.version)"
+                }
+              }
+              [pscustomobject]@{ file=$pkg.Name; packageId=$id; version=$ver; sha256=(Get-FileHash $pkg.FullName -Algorithm SHA256).Hash; dependencies=$deps }
+            } finally {
+              $zip.Dispose()
+            }
+          }
+          if (-not ($results | Where-Object { $_.packageId -eq 'WixToolset.Sdk' })) {
+            throw 'Missing WixToolset.Sdk package'
+          }
+          if (-not ($results | Where-Object { $_.packageId -eq 'wix' })) {
+            throw 'Missing wix CLI package'
+          }
+          $results | Sort-Object packageId | ConvertTo-Json -Depth 8 | Set-Content -Path "$dir/ctech-manifest.json" -Encoding utf8
+          $results | Sort-Object packageId | Format-Table packageId,version,file -AutoSize
+          Write-Host "Validated $($packages.Count) NuGet files."
+
+      - name: Upload NuGet packages
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wix6-ctech-packages
+          path: |
+            wix-source/build/artifacts/*.nupkg
+            wix-source/build/artifacts/*.snupkg
+            wix-source/build/artifacts/ctech-manifest.json
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload other build outputs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wix6-ctech-other
+          path: |
+            wix-source/build/artifacts/*.zip
+            wix-source/build/artifacts/*.msi
+            wix-source/build/artifacts/*.exe
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload diagnostic logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wix6-ctech-debug
+          path: wix-source/build/logs/
+          if-no-files-found: warn
+          retention-days: 7

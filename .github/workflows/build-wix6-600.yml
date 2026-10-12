@@ -120,6 +120,7 @@ jobs:
             '--nocache',
             '--installPath', $installPath,
             '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+            '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
             '--add', 'Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools',
             '--includeRecommended'
           )
@@ -171,6 +172,13 @@ jobs:
           $msbuild = Join-Path $vs 'MSBuild\Current\Bin\amd64\MSBuild.exe'
           if (-not (Test-Path $devCmd)) { throw "VsDevCmd not found: $devCmd" }
           if (-not (Test-Path $msbuild)) { throw "MSBuild not found: $msbuild" }
+
+          $vcToolsRoot = Join-Path $vs 'VC\Tools\MSVC'
+          $vcToolsets = @(Get-ChildItem $vcToolsRoot -Directory -ErrorAction SilentlyContinue | Sort-Object Name)
+          if (-not $vcToolsets.Count) {
+            throw "MSVC v143 x86/x64 toolset was not installed under $vcToolsRoot"
+          }
+          Write-Host "Installed MSVC toolsets: $($vcToolsets.Name -join ', ')"
 
           "CTECH_VSROOT=$vs" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "CTECH_VSDEVCMD=$devCmd" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append

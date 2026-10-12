@@ -98,7 +98,12 @@ jobs:
           # Ignore vulnerability audits for this historical source compilation,
           # using the disposable runner's MSBuild response file.
           $rsp = Join-Path (Split-Path $msbuild -Parent) 'MSBuild.rsp'
-          [System.IO.File]::AppendAllText($rsp, [Environment]::NewLine + '-p:NuGetAudit=false' + [Environment]::NewLine)
+          # MSBuild 17 supports -warnNotAsError to exclude selected codes from -warnaserror.
+          # nuget.exe restore can persist audit diagnostics in project.assets.json.
+          # Exclude those warnings when the unchanged upstream scripts invoke MSBuild.
+          $msbuildOptions = @('-p:NuGetAudit=false', '-warnNotAsError:NU1901,NU1902,NU1903,NU1904')
+          [System.IO.File]::AppendAllText($rsp, [Environment]::NewLine + ($msbuildOptions -join [Environment]::NewLine) + [Environment]::NewLine)
+          Write-Host "Configured MSBuild response file options: $($msbuildOptions -join ' ')"
           "CTECH_VSDEVCMD=$devCmd" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host 'Only runner environment modified; no WiX source edits.'
 

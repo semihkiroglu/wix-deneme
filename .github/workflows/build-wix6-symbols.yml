@@ -137,8 +137,6 @@ jobs:
           $msbuildOptions = @(
             '-p:NuGetAudit=false'
             '-p:CheckEolTargetFramework=false'
-            '-p:DebugType=portable'
-            '-p:DebugSymbols=true'
             '-warnAsMessage:NU1901,NU1902,NU1903,NU1904,NETSDK1138'
           )
           [System.IO.File]::AppendAllText($rsp, [Environment]::NewLine + ($msbuildOptions -join [Environment]::NewLine) + [Environment]::NewLine)
@@ -281,7 +279,7 @@ jobs:
           call src\internal\finalize.cmd release
           exit /b %errorlevel%
 
-      - name: Pack managed portable symbols separately (no rebuild or source edits)
+      - name: Rebuild eligible C# package projects with Portable PDB and pack matching nupkg/snupkg
         shell: pwsh
         working-directory: wix-source
         run: |
@@ -291,9 +289,11 @@ jobs:
           New-Item -ItemType Directory -Path $scratch -Force | Out-Null
 
           # The WiX source contains both SDK-style assemblies and custom .nuspec
-          # packages. NuGet raises NU5005 when IncludeSymbols is forced on the
-          # custom nuspec projects. Keep normal upstream packing untouched,
-          # then pack portable symbols only for C# SDK-style library projects.
+          # packages. NuGet raises NU5005 when IncludeSymbols is forced on
+          # custom nuspec projects. Build and test the upstream product with
+          # its original PDB settings first, then selectively REBUILD eligible
+          # C# projects using Portable PDB and re-pack BOTH binary + symbols.
+          # Never pair a newly rebuilt PDB with an older nupkg binary.
           $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
           $vs = (& $vswhere -latest -products * -version '[17.0,18.0)' -property installationPath).Trim()
           $msbuild = Join-Path $vs 'MSBuild\Current\Bin\amd64\MSBuild.exe'
@@ -314,18 +314,22 @@ jobs:
           foreach ($project in $candidates) {
             $outDir = Join-Path $scratch $project.BaseName
             New-Item -ItemType Directory -Path $outDir -Force | Out-Null
-            Write-Host "Packing portable symbols: $($project.BaseName)"
-            & $msbuild $project.FullName '-t:Pack' '-p:Configuration=Release' '-p:NoBuild=true' '-p:IncludeSymbols=true' '-p:SymbolPackageFormat=snupkg' "-p:PackageOutputPath=$outDir" '-nologo' '-v:minimal'
+            Write-Host "Rebuilding and packing Portable PDB symbols: $($project.BaseName)"
+            & $msbuild $project.FullName '-t:Rebuild;Pack' '-p:Configuration=Release' '-p:NoBuild=true' '-p:DebugType=portable' '-p:DebugSymbols=true' '-p:IncludeSymbols=true' '-p:SymbolPackageFormat=snupkg' "-p:PackageOutputPath=$outDir" '-nologo' '-v:minimal'
             $exitCode = $LASTEXITCODE
-            if ($exitCode -ne 0) { throw "Symbol Pack failed for $($project.FullName) with code $exitCode" }
+            if ($exitCode -ne 0) { throw "C# rebuild/Pack failed for $($project.FullName) with code $exitCode" }
 
+            $binary = Join-Path $outDir "$($project.BaseName).6.0.2-ctech.nupkg"
             $symbol = Join-Path $outDir "$($project.BaseName).6.0.2-ctech.snupkg"
+            if (-not (Test-Path $binary)) { throw "Expected rebuilt binary package missing: $binary" }
             if (Test-Path $symbol) {
+              Copy-Item -LiteralPath $binary -Destination $artifacts -Force
               Copy-Item -LiteralPath $symbol -Destination $artifacts -Force
-              $state = 'created'
+              $state = 'created (matched binaries and symbols)'
             } else {
-              # Resource-only or packaging-only projects have no Portable PDB.
-              $state = 'no-portable-pdb'
+              # Do not overwrite original binaries without a matching symbol package.
+              # Resource-only or packaging-only projects might lack Portable PDBs.
+              $state = 'no-portable-pdb (original nupkg preserved)'
             }
             $report.Add([pscustomobject]@{ Project=$project.FullName; Status=$state })
           }

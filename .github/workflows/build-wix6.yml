@@ -206,6 +206,31 @@ jobs:
           Write-Host "Test extension cache prepared: $dll"
           Write-Host 'Only runner cache changed; upstream files untouched.'
 
+      - name: Restore exact .NET 6 native host packages required by NetFx
+        shell: pwsh
+        working-directory: wix-source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $config = 'src/ext/NetFx/netcoresearch/packages.config'
+          if (-not (Test-Path $config)) { throw "Missing upstream NuGet package manifest: $config" }
+
+          # Upstream netfx_t.proj normally performs this restore via WixClean;
+          # the incremental extension build skips it. Restore here instead.
+          & nuget restore $config -PackagesDirectory 'packages' -NonInteractive
+          if ($LASTEXITCODE -ne 0) { throw "Native host package restore failed: $LASTEXITCODE" }
+
+          foreach ($arch in @('x86', 'x64', 'arm64')) {
+            $base = "packages/runtime.win-$arch.Microsoft.NETCore.DotNetAppHost.6.0.4/runtimes/win-$arch/native"
+            $header = Join-Path $base 'hostfxr.h'
+            if (-not (Test-Path $header)) {
+              Get-ChildItem $base -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+              throw "Expected original .NET 6.0.4 hostfxr.h missing: $header"
+            }
+            $resolver = "packages/runtime.win-$arch.Microsoft.NETCore.DotNetHostResolver.6.0.4/runtimes/win-$arch/native/hostfxr.dll"
+            if (-not (Test-Path $resolver)) { throw "Expected original hostfxr.dll missing: $resolver" }
+            Write-Host "Verified original .NET 6.0.4 native hosting files for $arch"
+          }
+
       - name: Build remaining extensions and finish upstream build
         shell: cmd
         working-directory: wix-source

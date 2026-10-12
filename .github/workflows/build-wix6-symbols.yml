@@ -312,22 +312,51 @@ jobs:
               -not @(Get-ChildItem $_.DirectoryName -Filter '*.nuspec' -File).Count
             } | Sort-Object FullName -Unique)
 
-          # Extension projects are custom-packed with WixExt.props,
-          # not with standard SDK NuGet IncludeSymbols (NU5017).
-          $customPackProjects = @($allCandidates | Where-Object {
-            $_.BaseName.EndsWith('.wixext') -or
-            (Select-String -LiteralPath $_.FullName -Pattern 'WixExt[.]props' -Quiet)
-          })
-          foreach ($project in $customPackProjects) {
-            Write-Host "Skipping custom WiX extension package: $($project.BaseName)"
-            $report.Add([pscustomobject]@{
-              Project = $project.FullName
-              Status = 'custom-wix-extension (original nupkg retained)'
-            })
+          # Only re-pack ordinary SDK assembly packages with Portable PDB.
+          # WiX also generates content-only sources, templates, extension packs,
+          # custom .nuspec-based SDK/Heat packs, and a separately assembled CLI.
+          # Those must retain their original upstream-specific package layout.
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $candidates = [System.Collections.Generic.List[object]]::new()
+          foreach ($project in $allCandidates) {
+            $xmlText = [System.IO.File]::ReadAllText($project.FullName)
+            $reason = $null
+            if ($project.BaseName.EndsWith('.wixext') -or $xmlText -match 'WixExt[.]props') {
+              $reason = 'custom WiX extension package'
+            } elseif ($xmlText -match '(?is)<IncludeBuildOutput>\s*false\s*</IncludeBuildOutput>' -or
+                      $xmlText -match '(?is)<NoBuild>\s*true\s*</NoBuild>') {
+              $reason = 'content-only package (no compiled assembly)'
+            } elseif ($xmlText -match '(?is)<NuspecFile>' -or
+                      $xmlText -match '(?is)<PackAsTool>\s*true\s*</PackAsTool>') {
+              $reason = 'custom NuGet package / published CLI layout'
+            }
+
+            # A normal managed .snupkg requires an assembly in the binary
+            # package, not merely a csproj with the same package ID.
+            if (-not $reason) {
+              $packageFile = Join-Path $artifacts "$($project.BaseName).6.0.2-ctech.nupkg"
+              $zip = [System.IO.Compression.ZipFile]::OpenRead($packageFile)
+              try {
+                $assemblies = @($zip.Entries | Where-Object {
+                  $_.FullName -match '^lib/[^/]+/[^/]+[.]dll$'
+                })
+                if (-not $assemblies.Count) {
+                  $reason = 'not a standard lib/ assembly package'
+                }
+              } finally { $zip.Dispose() }
+            }
+
+            if ($reason) {
+              Write-Host "Skipping $($project.BaseName): $reason"
+              $report.Add([pscustomobject]@{
+                Project = $project.FullName
+                Status = "skipped: $reason (original nupkg preserved)"
+              })
+            } else {
+              $candidates.Add($project)
+            }
           }
-          $excludedPaths = @($customPackProjects | ForEach-Object { $_.FullName })
-          $candidates = @($allCandidates | Where-Object { $_.FullName -notin $excludedPaths })
-          Write-Host "Found $($candidates.Count) C# standard package projects, excluded $($customPackProjects.Count) custom extensions."
+          Write-Host "Eligible managed binary projects: $($candidates.Count); excluded special package projects: $($allCandidates.Count - $candidates.Count)."
 
           foreach ($project in $candidates) {
             $outDir = Join-Path $scratch $project.BaseName

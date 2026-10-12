@@ -293,6 +293,8 @@ jobs:
           # custom nuspec projects. Build and test the upstream product with
           # its original PDB settings first, then selectively REBUILD eligible
           # C# projects using Portable PDB and re-pack BOTH binary + symbols.
+          # Avoid rebuilding downstream .wixproj references with the managed
+          # DebugType=portable property: WiX accepts only full/none for wixpdb.
           # Never pair a newly rebuilt PDB with an older nupkg binary.
           $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
           $vs = (& $vswhere -latest -products * -version '[17.0,18.0)' -property installationPath).Trim()
@@ -315,7 +317,7 @@ jobs:
             $outDir = Join-Path $scratch $project.BaseName
             New-Item -ItemType Directory -Path $outDir -Force | Out-Null
             Write-Host "Rebuilding and packing Portable PDB symbols: $($project.BaseName)"
-            & $msbuild $project.FullName '-t:Rebuild;Pack' '-p:Configuration=Release' '-p:NoBuild=false' '-p:DebugType=portable' '-p:DebugSymbols=true' '-p:IncludeSymbols=true' '-p:SymbolPackageFormat=snupkg' "-p:PackageOutputPath=$outDir" '-nologo' '-v:minimal'
+            & $msbuild $project.FullName '-t:Rebuild;Pack' '-p:Configuration=Release' '-p:NoBuild=false' '-p:BuildProjectReferences=false' '-p:DebugType=portable' '-p:DebugSymbols=true' '-p:IncludeSymbols=true' '-p:SymbolPackageFormat=snupkg' "-p:PackageOutputPath=$outDir" '-nologo' '-v:minimal'
             $exitCode = $LASTEXITCODE
             if ($exitCode -ne 0) { throw "C# rebuild/Pack failed for $($project.FullName) with code $exitCode" }
 

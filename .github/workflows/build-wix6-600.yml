@@ -124,14 +124,43 @@ jobs:
             '--includeRecommended'
           )
           $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
-          if ($process.ExitCode -notin @(0, 3010)) {
-            throw "Visual Studio Build Tools installation failed with exit code $($process.ExitCode)"
-          }
+          Write-Host "Build Tools bootstrapper exit code: $($process.ExitCode)"
 
           $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $vs = (& $vswhere -products Microsoft.VisualStudio.Product.BuildTools -version '[17.13,17.14)' -property installationPath).Trim()
-          if (-not $vs) { throw 'Visual Studio 2022 Build Tools 17.13 installation not found' }
-          $installedBuild = (& $vswhere -products Microsoft.VisualStudio.Product.BuildTools -version '[17.13,17.14)' -property installationVersion).Trim()
+          if (-not (Test-Path $vswhere)) { throw "vswhere missing after bootstrapper: $vswhere" }
+
+          Write-Host 'All Visual Studio instances after bootstrapper:'
+          & $vswhere -all -products * -format json
+
+          $vsCandidates = @(& $vswhere -products Microsoft.VisualStudio.Product.BuildTools -version '[17.13,17.14)' -property installationPath | Where-Object { $_ })
+          $buildCandidates = @(& $vswhere -products Microsoft.VisualStudio.Product.BuildTools -version '[17.13,17.14)' -property installationVersion | Where-Object { $_ })
+
+          if ($process.ExitCode -notin @(0, 3010) -or -not $vsCandidates.Count) {
+            Write-Host 'Historical Build Tools instance was not registered. Dumping Visual Studio installer diagnostics.'
+            Write-Host "Requested install path exists: $(Test-Path $installPath)"
+            if (Test-Path $installPath) {
+              Get-ChildItem $installPath -Force -ErrorAction SilentlyContinue | Select-Object -First 50 FullName
+            }
+
+            $patterns = @('dd_bootstrapper*.log','dd_client*.log','dd_setup*.log')
+            foreach ($pattern in $patterns) {
+              $logs = @(Get-ChildItem $env:TEMP -Filter $pattern -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 3)
+              foreach ($log in $logs) {
+                Write-Host "===== $($log.FullName) ====="
+                Get-Content $log.FullName -Tail 300 -ErrorAction SilentlyContinue
+              }
+            }
+
+            if ($process.ExitCode -notin @(0, 3010)) {
+              throw "Visual Studio Build Tools installation failed with exit code $($process.ExitCode)"
+            }
+            throw 'Visual Studio 2022 Build Tools 17.13 installation was not registered'
+          }
+
+          $vs = $vsCandidates[0]
+          $installedBuild = if ($buildCandidates.Count) { $buildCandidates[0] } else { $null }
           Write-Host "Historical Build Tools installation: $vs"
           Write-Host "Historical Build Tools build: $installedBuild"
           if ($installedBuild -ne $targetBuild) {

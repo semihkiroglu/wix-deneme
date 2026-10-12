@@ -438,7 +438,30 @@ jobs:
           foreach ($package in $packages) {
             $zip = [System.IO.Compression.ZipFile]::Open($package.FullName, [System.IO.Compression.ZipArchiveMode]::Update)
             try {
-              $nuspec = @($zip.Entries | Where-Object { $_.FullName -match '^[^/]+[.]nuspec        shell: pwsh
+              $nuspec = @($zip.Entries | Where-Object { $_.FullName -match '^[^/]+[.]nuspec$' })
+              if ($nuspec.Count -ne 1) { throw "Expected one nuspec in $($package.Name)" }
+              $reader = [System.IO.StreamReader]::new($nuspec[0].Open())
+              try { [xml]$xml = $reader.ReadToEnd() } finally { $reader.Dispose() }
+              $metadata = $xml.SelectSingleNode('/*[local-name()="package"]/*[local-name()="metadata"]')
+              if ($null -eq $metadata) { throw "Missing package metadata in $($package.Name)" }
+              $node = $metadata.SelectSingleNode('*[local-name()="releaseNotes"]')
+              if ($null -eq $node) {
+                $node = $xml.CreateElement('releaseNotes', $metadata.NamespaceURI)
+                $description = $metadata.SelectSingleNode('*[local-name()="description"]')
+                if ($null -ne $description) { [void]$metadata.InsertAfter($node, $description) }
+                else { [void]$metadata.AppendChild($node) }
+              }
+              $node.InnerText = $notes
+              $entryName = $nuspec[0].FullName
+              $nuspec[0].Delete()
+              $newEntry = $zip.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
+              $writer = [System.IO.StreamWriter]::new($newEntry.Open(), [System.Text.UTF8Encoding]::new($false))
+              try { $xml.Save($writer) } finally { $writer.Dispose() }
+            } finally { $zip.Dispose() }
+          }
+          Write-Host "Stamped ReleaseNotes in $($packages.Count) self-compiled binary NuGet packages."
+      - name: Inspect and verify produced NuGet packages
+        shell: pwsh
         working-directory: wix-source
         run: |
           $ErrorActionPreference = 'Stop'

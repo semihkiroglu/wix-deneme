@@ -47,19 +47,87 @@ jobs:
             throw "Unexpected source tag"
           }
 
-      - name: Install compatible .NET 8 SDK and .NET 6 build/runtime dependencies
+      - name: Install exact historical .NET SDKs
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: |
-            8.0.x
-            6.0.x
+            8.0.407
+            6.0.428
+
+      - name: Install Visual Studio 2022 Build Tools 17.13.5
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $targetVersion = '17.13.5'
+          $targetBuild = '17.13.35919.96'
+          $installPath = 'C:\CTech\VS2022BuildTools-17.13.5'
+          $bootstrapper = Join-Path $env:RUNNER_TEMP 'vs_buildtools_17.13.5.exe'
+
+          # Resolve Microsoft's fixed-version Build Tools bootstrapper from the
+          # official Visual Studio 2022 release-history row for 17.13.5.
+          $historyUri = 'https://learn.microsoft.com/en-us/visualstudio/releases/2022/release-history'
+          $html = (Invoke-WebRequest -Uri $historyUri -UseBasicParsing).Content
+          $versionIndex = $html.IndexOf($targetVersion, [System.StringComparison]::Ordinal)
+          if ($versionIndex -lt 0) { throw "Visual Studio $targetVersion row not found in Microsoft release history" }
+          $rowStart = $html.LastIndexOf('<tr', $versionIndex, [System.StringComparison]::OrdinalIgnoreCase)
+          $rowEnd = $html.IndexOf('</tr>', $versionIndex, [System.StringComparison]::OrdinalIgnoreCase)
+          if ($rowStart -lt 0 -or $rowEnd -lt 0) { throw "Could not isolate Visual Studio $targetVersion release-history row" }
+          $rowHtml = $html.Substring($rowStart, ($rowEnd + 5) - $rowStart)
+          $link = [regex]::Match($rowHtml, '(?is)href=["''](?<url>[^"'']+)["''][^>]*>.*?Build Tools.*?</a>')
+          if (-not $link.Success) { throw "Build Tools bootstrapper link not found for Visual Studio $targetVersion" }
+          $bootstrapperUri = [System.Net.WebUtility]::HtmlDecode($link.Groups['url'].Value)
+          if ($bootstrapperUri -notmatch '^https://download[.]visualstudio[.]microsoft[.]com/') {
+            throw "Unexpected Build Tools bootstrapper host: $bootstrapperUri"
+          }
+
+          Invoke-WebRequest -Uri $bootstrapperUri -OutFile $bootstrapper
+          $bootstrapperVersion = (Get-Item $bootstrapper).VersionInfo.ProductVersion
+          Write-Host "Fixed-version bootstrapper: $bootstrapperVersion"
+          if ($bootstrapperVersion -notmatch '^17[.]13[.]5(?:[+.]|$)') {
+            throw "Unexpected Build Tools bootstrapper version: $bootstrapperVersion"
+          }
+
+          $arguments = @(
+            '--quiet',
+            '--wait',
+            '--norestart',
+            '--nocache',
+            '--installPath', $installPath,
+            '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+            '--add', 'Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools',
+            '--includeRecommended'
+          )
+          $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -notin @(0, 3010)) {
+            throw "Visual Studio Build Tools installation failed with exit code $($process.ExitCode)"
+          }
+
+          $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = (& $vswhere -products Microsoft.VisualStudio.Product.BuildTools -version '[17.13,17.14)' -property installationPath).Trim()
+          if (-not $vs) { throw 'Visual Studio 2022 Build Tools 17.13 installation not found' }
+          $installedBuild = (& $vswhere -products Microsoft.VisualStudio.Product.BuildTools -version '[17.13,17.14)' -property installationVersion).Trim()
+          Write-Host "Historical Build Tools installation: $vs"
+          Write-Host "Historical Build Tools build: $installedBuild"
+          if ($installedBuild -ne $targetBuild) {
+            throw "Expected Visual Studio build $targetBuild but found $installedBuild"
+          }
+
+          $devCmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
+          $msbuild = Join-Path $vs 'MSBuild\Current\Bin\amd64\MSBuild.exe'
+          if (-not (Test-Path $devCmd)) { throw "VsDevCmd not found: $devCmd" }
+          if (-not (Test-Path $msbuild)) { throw "MSBuild not found: $msbuild" }
+
+          "CTECH_VSROOT=$vs" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CTECH_VSDEVCMD=$devCmd" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CTECH_MSBUILD=$msbuild" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Report installed toolchains
         shell: pwsh
         run: |
           dotnet --list-sdks
           dotnet --list-runtimes
-          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationVersion
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -products Microsoft.VisualStudio.Product.BuildTools -version '[17.13,17.14)' -property installationVersion
+          & "$env:CTECH_MSBUILD" -version
 
       - name: Install x86 .NET 6 runtime for Burn integration helper executables
         shell: pwsh
@@ -93,43 +161,49 @@ jobs:
           Write-Host "x86 .NET 6 runtime ready: $installDir"
           Write-Host "x64 .NET runtime remains unchanged: $x64Root"
 
-      - name: Select .NET 8 on the disposable Windows runner (no source edits)
+      - name: Pin .NET SDK visibility to the historical toolchain (no source edits)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $sdkRoot = Join-Path $env:ProgramFiles 'dotnet\sdk'
-          $sdk8 = @(Get-ChildItem $sdkRoot -Directory |
-            Where-Object { $_.Name -match '^8[.]0[.][0-9]+$' } |
-            Sort-Object { [version]$_.Name } -Descending |
-            Select-Object -First 1)
-          if (-not $sdk8.Count) { throw '.NET 8 SDK not installed' }
+          $requiredSdks = @('8.0.407', '6.0.428')
+          foreach ($required in $requiredSdks) {
+            if (-not (Test-Path (Join-Path $sdkRoot $required))) {
+              throw "Required historical .NET SDK not installed: $required"
+            }
+          }
 
           # WiX 6 upstream-generated global.json has no pinned SDK version.
-          # An SDK 10 on the image requires MSBuild 18; VS2022 ships MSBuild 17.
-          # Hide only the incompatible SDKs on this disposable runner.
-          $disabledRoot = Join-Path $env:ProgramFiles 'dotnet\sdk-ctech-disabled'
+          # Keep only the SDKs from the selected historical toolchain visible
+          # to the resolver on this disposable runner.
+          $disabledRoot = Join-Path $env:RUNNER_TEMP 'dotnet-sdk-ctech-disabled'
           New-Item -ItemType Directory -Path $disabledRoot -Force | Out-Null
           Get-ChildItem $sdkRoot -Directory |
-            Where-Object { [version]$_.Name -ge [version]'9.0.0' } |
+            Where-Object { $_.Name -notin $requiredSdks } |
             ForEach-Object {
               $destination = Join-Path $disabledRoot $_.Name
-              Write-Host "Temporarily hiding incompatible SDK: $($_.Name)"
+              Write-Host "Temporarily hiding non-historical SDK: $($_.Name)"
               Move-Item -LiteralPath $_.FullName -Destination $destination -ErrorAction Stop
             }
+
           Write-Host 'SDKs available to MSBuild:'
           dotnet --list-sdks
-          Write-Host "Using compatible .NET SDK: $($sdk8[0].Name)"
+          $selectedSdk = (dotnet --version).Trim()
+          Write-Host "Selected .NET SDK: $selectedSdk"
+          if ($selectedSdk -ne '8.0.407') {
+            throw "Expected .NET SDK 8.0.407 but dotnet selected $selectedSdk"
+          }
 
-          $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $vs = (& $vswhere -latest -products * -version '[17.0,18.0)' -property installationPath).Trim()
-          if (-not $vs) { throw 'VS2022 installation not found' }
-          $devCmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
-          $msbuild = Join-Path $vs 'MSBuild\Current\Bin\amd64\MSBuild.exe'
-          if (-not (Test-Path $devCmd)) { throw "VsDevCmd not found: $devCmd" }
-          if (-not (Test-Path $msbuild)) { throw "MSBuild not found: $msbuild" }
+          $msbuild = $env:CTECH_MSBUILD
+          $devCmd = $env:CTECH_VSDEVCMD
+          if (-not $msbuild -or -not (Test-Path $msbuild)) { throw "Pinned MSBuild not found: $msbuild" }
+          if (-not $devCmd -or -not (Test-Path $devCmd)) { throw "Pinned VsDevCmd not found: $devCmd" }
+          Write-Host 'Pinned historical MSBuild:'
+          & $msbuild -version -nologo
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned historical MSBuild self-check failed' }
 
           # Ignore vulnerability audits for this historical source compilation,
-          # using the disposable runner's MSBuild response file.
+          # using the pinned historical MSBuild response file.
           $rsp = Join-Path (Split-Path $msbuild -Parent) 'MSBuild.rsp'
           # -warnNotAsError alone causes MSB1062 on MSBuild commands without -warnAsError.
           # -warnAsMessage works independently, including when upstream invokes -warnaserror.
@@ -141,7 +215,6 @@ jobs:
           )
           [System.IO.File]::AppendAllText($rsp, [Environment]::NewLine + ($msbuildOptions -join [Environment]::NewLine) + [Environment]::NewLine)
           Write-Host "Configured MSBuild response file options: $($msbuildOptions -join ' ')"
-          "CTECH_VSDEVCMD=$devCmd" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host 'Only runner environment modified; no WiX source edits.'
 
       - name: Prepare CTech package version before build
@@ -296,10 +369,8 @@ jobs:
           # Avoid rebuilding downstream .wixproj references with the managed
           # DebugType=portable property: WiX accepts only full/none for wixpdb.
           # Never pair a newly rebuilt PDB with an older nupkg binary.
-          $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $vs = (& $vswhere -latest -products * -version '[17.0,18.0)' -property installationPath).Trim()
-          $msbuild = Join-Path $vs 'MSBuild\Current\Bin\amd64\MSBuild.exe'
-          if (-not (Test-Path $msbuild)) { throw "MSBuild not found: $msbuild" }
+          $msbuild = $env:CTECH_MSBUILD
+          if (-not $msbuild -or -not (Test-Path $msbuild)) { throw "Pinned historical MSBuild not found: $msbuild" }
 
           $packages = @(Get-ChildItem $artifacts -Filter '*.nupkg' -File)
           if (-not $packages.Count) { throw 'No binary packages to associate symbol packages with' }

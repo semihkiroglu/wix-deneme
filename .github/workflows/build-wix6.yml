@@ -60,23 +60,32 @@ jobs:
           dotnet --list-runtimes
           & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationVersion
 
-      - name: Prepare external build environment (no source edits)
+      - name: Select .NET 8 on the disposable Windows runner (no source edits)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $sdk = @(Get-ChildItem (Join-Path $env:ProgramFiles 'dotnet\sdk') -Directory |
+          $sdkRoot = Join-Path $env:ProgramFiles 'dotnet\sdk'
+          $sdk8 = @(Get-ChildItem $sdkRoot -Directory |
             Where-Object { $_.Name -match '^8[.]0[.][0-9]+$' } |
             Sort-Object { [version]$_.Name } -Descending |
             Select-Object -First 1)
-          if (-not $sdk.Count) { throw '.NET 8 SDK not installed' }
-          $sdksPath = Join-Path $sdk[0].FullName 'Sdks'
-          if (-not (Test-Path (Join-Path $sdksPath 'Microsoft.NET.Sdk\Sdk'))) {
-            throw "Cannot locate Microsoft.NET.Sdk under $sdksPath"
-          }
-          "MSBuildSDKsPath=$sdksPath" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          "DOTNET_MSBUILD_SDK_RESOLVER_SDKS_DIR=$sdksPath" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          "DOTNET_MSBUILD_SDK_RESOLVER_SDKS_VER=$($sdk[0].Name)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Runner MSBuild SDK selection: $($sdk[0].Name)"
+          if (-not $sdk8.Count) { throw '.NET 8 SDK not installed' }
+
+          # WiX 6 upstream-generated global.json has no pinned SDK version.
+          # An SDK 10 on the image requires MSBuild 18; VS2022 ships MSBuild 17.
+          # Hide only the incompatible SDKs on this disposable runner.
+          $disabledRoot = Join-Path $env:ProgramFiles 'dotnet\sdk-ctech-disabled'
+          New-Item -ItemType Directory -Path $disabledRoot -Force | Out-Null
+          Get-ChildItem $sdkRoot -Directory |
+            Where-Object { [version]$_.Name -ge [version]'9.0.0' } |
+            ForEach-Object {
+              $destination = Join-Path $disabledRoot $_.Name
+              Write-Host "Temporarily hiding incompatible SDK: $($_.Name)"
+              Move-Item -LiteralPath $_.FullName -Destination $destination -ErrorAction Stop
+            }
+          Write-Host 'SDKs available to MSBuild:'
+          dotnet --list-sdks
+          Write-Host "Using compatible .NET SDK: $($sdk8[0].Name)"
 
           $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
           $vs = (& $vswhere -latest -products * -version '[17.0,18.0)' -property installationPath).Trim()
@@ -85,13 +94,13 @@ jobs:
           $msbuild = Join-Path $vs 'MSBuild\Current\Bin\amd64\MSBuild.exe'
           if (-not (Test-Path $devCmd)) { throw "VsDevCmd not found: $devCmd" }
           if (-not (Test-Path $msbuild)) { throw "MSBuild not found: $msbuild" }
-          # MSBuild automatically reads MSBuild.rsp located beside its executable.
-          # Configure the temporary runner installation, never the WiX source tree.
+
+          # Ignore vulnerability audits for this historical source compilation,
+          # using the disposable runner's MSBuild response file.
           $rsp = Join-Path (Split-Path $msbuild -Parent) 'MSBuild.rsp'
           [System.IO.File]::AppendAllText($rsp, [Environment]::NewLine + '-p:NuGetAudit=false' + [Environment]::NewLine)
           "CTECH_VSDEVCMD=$devCmd" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Configured temporary runner MSBuild response file: $rsp"
-          Write-Host 'Original WiX source is unchanged except package version templates.'
+          Write-Host 'Only runner environment modified; no WiX source edits.'
 
       - name: Prepare CTech package version before build
         shell: pwsh

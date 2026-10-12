@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-2025
+    runs-on: windows-2022
     timeout-minutes: 330
     env:
       DOTNET_NOLOGO: "true"
@@ -104,8 +104,8 @@ jobs:
             Select-Object -First 1)
           if (-not $sdk9.Count) { throw '.NET 9 SDK not installed' }
 
-          # WiX 7 upstream-generated global.json has no pinned SDK version.
-          # An SDK 10 on the image requires MSBuild 18; VS2022 uses MSBuild 17.
+          # WiX 7 upstream-generated global.json requests .NET 9.0.300 or later compatible feature band.
+          # Keep .NET 9 for WiX 7; the windows-2022 runner includes VS2022 / MSBuild 17.
           # Hide only the incompatible SDKs on this disposable runner.
           $disabledRoot = Join-Path $env:ProgramFiles 'dotnet\sdk-ctech-disabled'
           New-Item -ItemType Directory -Path $disabledRoot -Force | Out-Null

@@ -54,30 +54,31 @@ jobs:
             8.0.407
             6.0.428
 
-      - name: Remove preinstalled Visual Studio 2022 instances
+      - name: Clean preinstalled Visual Studio 2022 products
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $cleanup = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\InstallCleanup.exe'
           $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $setup = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\setup.exe'
+          if (-not (Test-Path $cleanup)) { throw "InstallCleanup.exe not found: $cleanup" }
           if (-not (Test-Path $vswhere)) { throw "vswhere not found: $vswhere" }
-          if (-not (Test-Path $setup)) { throw "Visual Studio Installer setup.exe not found: $setup" }
 
-          $instances = @(& $vswhere -all -products * -version '[17.0,18.0)' -property installationPath | Where-Object { $_ })
-          foreach ($instance in $instances) {
-            Write-Host "Removing preinstalled Visual Studio 2022 instance: $instance"
-            $args = @('uninstall', '--installPath', $instance, '--quiet', '--norestart')
-            $process = Start-Process -FilePath $setup -ArgumentList $args -Wait -PassThru
-            if ($process.ExitCode -notin @(0, 3010)) {
-              throw "Visual Studio uninstall failed for $instance with exit code $($process.ExitCode)"
-            }
+          Write-Host 'Visual Studio 2022 instances before cleanup:'
+          & $vswhere -all -products * -version '[17.0,18.0)' -property installationPath
+
+          # Microsoft documents -i 17 for removing all Visual Studio 17.x
+          # product information and main installation directories when a normal
+          # uninstall has failed and the same major version will be reinstalled.
+          $process = Start-Process -FilePath $cleanup -ArgumentList @('-i','17') -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "InstallCleanup.exe failed with exit code $($process.ExitCode)"
           }
 
           $remaining = @(& $vswhere -all -products * -version '[17.0,18.0)' -property installationPath | Where-Object { $_ })
           if ($remaining.Count) {
-            throw "Visual Studio 2022 instance(s) remain after uninstall: $($remaining -join ', ')"
+            throw "Visual Studio 2022 product(s) remain after InstallCleanup: $($remaining -join ', ')"
           }
-          Write-Host 'Preinstalled Visual Studio 2022 instances removed from disposable runner.'
+          Write-Host 'Visual Studio 2022 product registrations cleared on disposable runner.'
 
       - name: Install Visual Studio 2022 Build Tools 17.13.5
         shell: pwsh

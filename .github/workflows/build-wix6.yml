@@ -19,6 +19,7 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: "true"
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
       NUGET_XMLDOC_MODE: skip
+      CheckEolTargetFramework: "false"
       RuntimeTestsEnabled: "false"
       WixOfficialBuild: "false"
       SignBuild: "false"
@@ -101,7 +102,11 @@ jobs:
           # -warnNotAsError alone causes MSB1062 on MSBuild commands without -warnAsError.
           # -warnAsMessage works independently, including when upstream invokes -warnaserror.
           # These settings belong to the disposable runner, not any upstream source file.
-          $msbuildOptions = @('-p:NuGetAudit=false', '-warnAsMessage:NU1901,NU1902,NU1903,NU1904')
+          $msbuildOptions = @(
+            '-p:NuGetAudit=false'
+            '-p:CheckEolTargetFramework=false'
+            '-warnAsMessage:NU1901,NU1902,NU1903,NU1904,NETSDK1138'
+          )
           [System.IO.File]::AppendAllText($rsp, [Environment]::NewLine + ($msbuildOptions -join [Environment]::NewLine) + [Environment]::NewLine)
           Write-Host "Configured MSBuild response file options: $($msbuildOptions -join ' ')"
           "CTECH_VSDEVCMD=$devCmd" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append

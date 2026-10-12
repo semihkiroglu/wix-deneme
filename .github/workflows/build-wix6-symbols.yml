@@ -20,7 +20,9 @@ jobs:
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
       NUGET_XMLDOC_MODE: skip
       CheckEolTargetFramework: "false"
-      RuntimeTestsEnabled: "false"
+      # Match upstream WiX's official CI: execute Burn/MSI runtime integration tests.
+      # The previous 6.0.2.1 artifacts remain available from successful Run #10.
+      RuntimeTestsEnabled: "true"
       WixOfficialBuild: "false"
       SignBuild: "false"
 

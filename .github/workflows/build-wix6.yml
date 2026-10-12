@@ -175,16 +175,16 @@ jobs:
           call src\tools\tools.cmd release
           exit /b %errorlevel%
 
-      - name: Build prerequisite Util extension first
+      - name: Build and pack Util extension without invoking tests
         shell: cmd
         working-directory: wix-source
         run: |
           call "%CTECH_VSDEVCMD%" -no_logo -arch=amd64
           if errorlevel 1 exit /b 1
-          pushd src\ext\Util
-          msbuild util_t.proj -p:Configuration=Release -tl -nologo -m -warnaserror -bl:..\..\..\build\logs\util_prebuild.binlog
+          msbuild "src\ext\Util\wixext\WixToolset.Util.wixext.csproj" -Restore -t:Build -p:Configuration=Release -tl -nologo -m -warnaserror -bl:build\logs\util_prebuild.binlog
           if errorlevel 1 exit /b 1
-          popd
+          msbuild "src\ext\Util\wixext\WixToolset.Util.wixext.csproj" -t:Pack -p:Configuration=Release -p:NoBuild=true -tl -nologo -warnaserror -bl:build\logs\util_prepack.binlog
+          if errorlevel 1 exit /b 1
           if not exist "build\artifacts\WixToolset.Util.wixext.6.0.2-ctech.nupkg" exit /b 1
           exit /b 0
 

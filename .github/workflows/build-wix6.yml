@@ -61,6 +61,37 @@ jobs:
           dotnet --list-runtimes
           & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationVersion
 
+      - name: Install x86 .NET 6 runtime for Burn integration helper executables
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installDir = Join-Path $env:RUNNER_TEMP 'dotnet-x86'
+          $installScript = Join-Path $env:RUNNER_TEMP 'dotnet-install.ps1'
+
+          # Burn integration fixtures invoke win-x86 .NET 6 apphosts.
+          # The GitHub runner supplies an x64 DOTNET_ROOT, which causes the
+          # x86 apphost to load an incompatible hostfxr.dll (0x800700C1).
+          Invoke-WebRequest -Uri 'https://dot.net/v1/dotnet-install.ps1' -OutFile $installScript
+          & $installScript -Channel '6.0' -Runtime dotnet -Architecture x86 -InstallDir $installDir -NoPath
+          if ($LASTEXITCODE -ne 0) { throw "x86 .NET 6 runtime install failed: $LASTEXITCODE" }
+
+          $hostfxr = @(Get-ChildItem (Join-Path $installDir 'host\fxr') -Directory |
+            Where-Object { $_.Name -match '^6[.]0[.]' })
+          $runtime = @(Get-ChildItem (Join-Path $installDir 'shared\Microsoft.NETCore.App') -Directory |
+            Where-Object { $_.Name -match '^6[.]0[.]' })
+          if (-not $hostfxr.Count -or -not $runtime.Count) {
+            throw 'Required x86 .NET 6 hostfxr and Microsoft.NETCore.App runtime were not installed'
+          }
+          & (Join-Path $installDir 'dotnet.exe') --list-runtimes
+          if ($LASTEXITCODE -ne 0) { throw 'x86 dotnet.exe runtime self-check failed' }
+
+          # Architecture-specific variables take precedence over DOTNET_ROOT.
+          "DOTNET_ROOT_X86=$installDir" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          $x64Root = Join-Path $env:ProgramFiles 'dotnet'
+          "DOTNET_ROOT_X64=$x64Root" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "x86 .NET 6 runtime ready: $installDir"
+          Write-Host "x64 .NET runtime remains unchanged: $x64Root"
+
       - name: Select .NET 8 on the disposable Windows runner (no source edits)
         shell: pwsh
         run: |

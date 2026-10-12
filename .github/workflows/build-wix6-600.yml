@@ -99,7 +99,7 @@ jobs:
           $rowEnd = $html.IndexOf('</tr>', $versionIndex, [System.StringComparison]::OrdinalIgnoreCase)
           if ($rowStart -lt 0 -or $rowEnd -lt 0) { throw "Could not isolate Visual Studio $targetVersion release-history row" }
           $rowHtml = $html.Substring($rowStart, ($rowEnd + 5) - $rowStart)
-          $link = [regex]::Match($rowHtml, '(?is)href=["''](?<url>[^"'']+)["''][^>]*>.*?Build Tools.*?</a>')
+          $link = [regex]::Match($rowHtml, '(?is)<a\b[^>]*href=["''](?<url>[^"'']+)["''][^>]*>\s*Build Tools\s*</a>')
           if (-not $link.Success) { throw "Build Tools bootstrapper link not found for Visual Studio $targetVersion" }
           $bootstrapperUri = [System.Net.WebUtility]::HtmlDecode($link.Groups['url'].Value)
           if ($bootstrapperUri -notmatch '^https://download[.]visualstudio[.]microsoft[.]com/') {

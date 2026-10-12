@@ -146,7 +146,8 @@ jobs:
           Write-Host 'Verified: only three versioning templates modified.'
           git diff --stat
 
-      - name: Build from source (Release)
+      # Follow upstream build_all.cmd in exact order, split at Util extension.
+      - name: Build WiX prerequisites and CLI (Release)
         shell: cmd
         working-directory: wix-source
         run: |
@@ -155,7 +156,70 @@ jobs:
           where msbuild
           msbuild -version
           if errorlevel 1 exit /b 1
-          call devbuild.cmd release
+          call src\clean.cmd
+          if errorlevel 1 exit /b 1
+          call src\build_init.cmd
+          if errorlevel 1 exit /b 1
+          call src\dtf\dtf.cmd release
+          if errorlevel 1 exit /b 1
+          call src\internal\internal.cmd release
+          if errorlevel 1 exit /b 1
+          call src\libs\libs.cmd release
+          if errorlevel 1 exit /b 1
+          call src\api\api.cmd release
+          if errorlevel 1 exit /b 1
+          call src\burn\burn.cmd release
+          if errorlevel 1 exit /b 1
+          call src\wix\wix.cmd release
+          if errorlevel 1 exit /b 1
+          call src\tools\tools.cmd release
+          exit /b %errorlevel%
+
+      - name: Build prerequisite Util extension first
+        shell: cmd
+        working-directory: wix-source
+        run: |
+          call "%CTECH_VSDEVCMD%" -no_logo -arch=amd64
+          if errorlevel 1 exit /b 1
+          pushd src\ext\Util
+          msbuild util_t.proj -p:Configuration=Release -tl -nologo -m -warnaserror -bl:..\..\..\build\logs\util_prebuild.binlog
+          if errorlevel 1 exit /b 1
+          popd
+          if not exist "build\artifacts\WixToolset.Util.wixext.6.0.2-ctech.nupkg" exit /b 1
+          exit /b 0
+
+      - name: Populate local WiX extension cache for integration tests
+        shell: pwsh
+        working-directory: wix-source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $pkg = Join-Path $PWD 'build/artifacts/WixToolset.Util.wixext.6.0.2-ctech.nupkg'
+          if (-not (Test-Path $pkg)) { throw "Util extension package not built: $pkg" }
+          $cacheRoot = Join-Path $env:RUNNER_TEMP 'ctech-extension-cache'
+          $extRoot = Join-Path $cacheRoot '.wix/extensions/WixToolset.Util.wixext/6.0.2-ctech'
+          New-Item -ItemType Directory -Force -Path $extRoot | Out-Null
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($pkg, $extRoot)
+          $dll = Join-Path $extRoot 'wixext6/WixToolset.Util.wixext.dll'
+          if (-not (Test-Path $dll)) { throw "Util extension DLL not found in package: $dll" }
+          "WIX_EXTENSIONS=$cacheRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Test extension cache prepared: $dll"
+          Write-Host 'Only runner cache changed; upstream files untouched.'
+
+      - name: Build remaining extensions and finish upstream build
+        shell: cmd
+        working-directory: wix-source
+        run: |
+          call "%CTECH_VSDEVCMD%" -no_logo -arch=amd64
+          if errorlevel 1 exit /b 1
+          if not exist "%WIX_EXTENSIONS%\.wix\extensions\WixToolset.Util.wixext\6.0.2-ctech\wixext6\WixToolset.Util.wixext.dll" exit /b 1
+          call src\ext\ext.cmd release inc
+          if errorlevel 1 exit /b 1
+          call src\setup\setup.cmd release
+          if errorlevel 1 exit /b 1
+          call src\test\test.cmd release
+          if errorlevel 1 exit /b 1
+          call src\internal\finalize.cmd release
           exit /b %errorlevel%
 
       - name: Inspect and verify produced NuGet packages
@@ -207,6 +271,57 @@ jobs:
           $results | Sort-Object packageId | ConvertTo-Json -Depth 8 | Set-Content -Path "$dir/ctech-manifest.json" -Encoding utf8
           $results | Sort-Object packageId | Format-Table packageId,version,file -AutoSize
           Write-Host "Validated $($packages.Count) NuGet files."
+
+      - name: Capture entire modified source tree and exact Git patch
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = Join-Path $env:GITHUB_WORKSPACE 'wix-source'
+          if (-not (Test-Path (Join-Path $source '.git'))) {
+            Write-Warning 'Checkout is unavailable; no source snapshot possible.'
+            exit 0
+          }
+          $archiveRoot = Join-Path $env:GITHUB_WORKSPACE 'source-snapshot'
+          $sourceCopy = Join-Path $archiveRoot 'wix-source'
+          $inspection = Join-Path $archiveRoot 'inspection'
+          New-Item -ItemType Directory -Path $sourceCopy,$inspection -Force | Out-Null
+          (& git -C $source rev-parse HEAD) | Set-Content (Join-Path $inspection 'upstream-commit.txt')
+          (& git -C $source status --short --untracked-files=normal) | Set-Content (Join-Path $inspection 'git-status.txt')
+          (& git -C $source diff --binary) | Set-Content (Join-Path $inspection 'source-modifications.patch') -Encoding utf8
+          (& git -C $source diff --name-status) | Set-Content (Join-Path $inspection 'changed-files.txt') -Encoding utf8
+          (& git -C $source diff --stat) | Set-Content (Join-Path $inspection 'change-summary.txt') -Encoding utf8
+          @'
+          This snapshot contains the cloned WiX v6.0.2 working tree AS MODIFIED
+          by the workflow, including version templates and generated global.json
+          and Directory.Packages.props. It is captured even if the build fails.
+          Excluded: .git metadata and root build/packages output directories.
+          Binary outputs and logs are separate artifacts.
+          The inspection folder contains upstream SHA and the exact git diff.
+          '@ | Set-Content (Join-Path $inspection 'README.txt') -Encoding utf8
+          $excluded = @(
+            (Join-Path $source '.git')
+            (Join-Path $source 'build')
+            (Join-Path $source 'packages')
+          )
+          & robocopy.exe $source $sourceCopy /E /XD $excluded /R:1 /W:1 /NFL /NDL /NP /NJH /NJS | Out-Null
+          if ($LASTEXITCODE -gt 7) { throw "robocopy source snapshot failed: $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
+          $expected = Join-Path $sourceCopy 'src/internal/SetBuildNumber/SomeVerInfo.props.pp'
+          if (-not (Test-Path $expected)) { throw 'Snapshot missing version template' }
+          if (-not ((Get-Content $expected -Raw).Contains('-ctech'))) { throw 'Snapshot misses CTech version modification' }
+          Write-Host "Modified source snapshot created: $sourceCopy"
+
+      - name: Upload modified source snapshot
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wix6-ctech-modified-source
+          path: source-snapshot/
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 6
+          include-hidden-files: true
 
       - name: Upload NuGet packages
         if: ${{ always() }}

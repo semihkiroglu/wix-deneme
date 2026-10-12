@@ -1,0 +1,2 @@
+GitHub main branch write-access check for planned WiX 7 workflow.
+This file is a harmless test; it does not change or trigger any build workflow.

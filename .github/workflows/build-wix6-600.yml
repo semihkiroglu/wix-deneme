@@ -54,6 +54,30 @@ jobs:
             8.0.407
             6.0.428
 
+      - name: Preserve legacy MSTest V1 reference
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $instances = @(& $vswhere -all -products * -version '[17.0,18.0)' -property installationPath | Where-Object { $_ })
+          $candidates = @($instances | ForEach-Object {
+            Join-Path $_ 'Common7\IDE\PublicAssemblies\Microsoft.VisualStudio.QualityTools.UnitTestFramework.dll'
+          } | Where-Object { Test-Path $_ })
+          if (-not $candidates.Count) { throw 'Upstream DTF requires the legacy MSTest V1 reference from the runner Visual Studio installation' }
+          $source = $candidates[0]
+          $identity = [System.Reflection.AssemblyName]::GetAssemblyName($source).FullName
+          $expected = 'Microsoft.VisualStudio.QualityTools.UnitTestFramework, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'
+          if ($identity -ne $expected) { throw "Unexpected legacy MSTest assembly identity: $identity" }
+          $hash = (Get-FileHash $source -Algorithm SHA256).Hash
+          $saved = Join-Path $env:RUNNER_TEMP 'Microsoft.VisualStudio.QualityTools.UnitTestFramework.dll'
+          Copy-Item -LiteralPath $source -Destination $saved
+          if ((Get-FileHash $saved -Algorithm SHA256).Hash -ne $hash) { throw 'Legacy MSTest reference changed during preservation' }
+          "CTECH_MSTEST_V1_PATH=$saved" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CTECH_MSTEST_V1_SHA256=$hash" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Preserved Microsoft reference: $source"
+          Write-Host "Assembly identity: $identity"
+          Write-Host "Reference SHA-256: $hash"
+
       - name: Clean preinstalled Visual Studio 2022 products
         shell: pwsh
         run: |
@@ -191,6 +215,15 @@ jobs:
             }
             Write-Host "Verified $arch compiler: $($compilers -join ', ')"
           }
+
+          # Build Tools lacks the MSTest V1 reference used by upstream DTF tests.
+          $legacyReference = Join-Path $vs 'Common7\IDE\PublicAssemblies\Microsoft.VisualStudio.QualityTools.UnitTestFramework.dll'
+          New-Item -ItemType Directory -Path (Split-Path $legacyReference -Parent) -Force | Out-Null
+          Copy-Item -LiteralPath $env:CTECH_MSTEST_V1_PATH -Destination $legacyReference
+          if ((Get-FileHash $legacyReference -Algorithm SHA256).Hash -ne $env:CTECH_MSTEST_V1_SHA256) {
+            throw 'Legacy MSTest reference changed during restoration'
+          }
+          Write-Host "Restored original Microsoft test reference: $legacyReference"
 
           "CTECH_VSROOT=$vs" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "CTECH_VSDEVCMD=$devCmd" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append

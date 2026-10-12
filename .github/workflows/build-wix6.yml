@@ -2,6 +2,10 @@ name: Build WiX 6.0.2 (CTech)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-wix6.yml'
 
 permissions:
   contents: read
@@ -42,6 +46,20 @@ jobs:
             throw "Unexpected source tag"
           }
 
+      - name: Install compatible .NET 8 SDK and .NET 6 build/runtime dependencies
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            6.0.x
+
+      - name: Report installed toolchains
+        shell: pwsh
+        run: |
+          dotnet --list-sdks
+          dotnet --list-runtimes
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationVersion
+
       - name: Prepare CTech package version before build
         shell: pwsh
         working-directory: wix-source
@@ -50,7 +68,8 @@ jobs:
           $templates = @(
             @{ Path = 'src/internal/SetBuildNumber/SomeVerInfo.props.pp'; Find = '<PackageVersion>{major}.{minor}.{patch}{dashlabel}</PackageVersion>'; Replace = '<PackageVersion>{major}.{minor}.{patch}{dashlabel}-ctech</PackageVersion>' },
             @{ Path = 'src/internal/SetBuildNumber/Directory.Packages.props.pp'; Find = 'Version="{packageversion}"'; Replace = 'Version="{packageversion}-ctech"' },
-            @{ Path = 'src/internal/SetBuildNumber/global.json.pp'; Find = '"WixToolset.Sdk": "{packageversion}"'; Replace = '"WixToolset.Sdk": "{packageversion}-ctech"' }
+            @{ Path = 'src/internal/SetBuildNumber/global.json.pp'; Find = '"WixToolset.Sdk": "{packageversion}"'; Replace = '"WixToolset.Sdk": "{packageversion}-ctech"' },
+            @{ Path = 'src/internal/SetBuildNumber/global.json.pp'; Find = '"allowPrerelease": false'; Replace = '"version": "8.0.100", "rollForward": "latestFeature", "allowPrerelease": false' }
           )
           foreach ($entry in $templates) {
             $path = Join-Path $PWD $entry.Path

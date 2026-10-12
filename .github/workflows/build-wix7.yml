@@ -20,7 +20,7 @@ jobs:
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
       NUGET_XMLDOC_MODE: skip
       CheckEolTargetFramework: "false"
-      RuntimeTestsEnabled: "false"
+      RuntimeTestsEnabled: "true"
       WixOfficialBuild: "false"
       SignBuild: "false"
 

@@ -54,29 +54,6 @@ jobs:
             8.0.407
             6.0.428
 
-      - name: Preserve legacy MSTest V1 reference
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $instances = @(& $vswhere -all -products * -version '[17.0,18.0)' -property installationPath | Where-Object { $_ })
-          $candidates = @($instances | ForEach-Object {
-            Join-Path $_ 'Common7\IDE\PublicAssemblies\Microsoft.VisualStudio.QualityTools.UnitTestFramework.dll'
-          } | Where-Object { Test-Path $_ })
-          if (-not $candidates.Count) { throw 'Upstream DTF requires the legacy MSTest V1 reference from the runner Visual Studio installation' }
-          $source = $candidates[0]
-          $identity = [System.Reflection.AssemblyName]::GetAssemblyName($source).FullName
-          $expected = 'Microsoft.VisualStudio.QualityTools.UnitTestFramework, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'
-          if ($identity -ne $expected) { throw "Unexpected legacy MSTest assembly identity: $identity" }
-          $hash = (Get-FileHash $source -Algorithm SHA256).Hash
-          $saved = Join-Path $env:RUNNER_TEMP 'Microsoft.VisualStudio.QualityTools.UnitTestFramework.dll'
-          Copy-Item -LiteralPath $source -Destination $saved
-          if ((Get-FileHash $saved -Algorithm SHA256).Hash -ne $hash) { throw 'Legacy MSTest reference changed during preservation' }
-          "CTECH_MSTEST_V1_PATH=$saved" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          "CTECH_MSTEST_V1_SHA256=$hash" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Preserved Microsoft reference: $source"
-          Write-Host "Assembly identity: $identity"
-          Write-Host "Reference SHA-256: $hash"
 
       - name: Clean preinstalled Visual Studio 2022 products
         shell: pwsh
@@ -104,16 +81,16 @@ jobs:
           }
           Write-Host 'Visual Studio 2022 product registrations cleared on disposable runner.'
 
-      - name: Install Visual Studio 2022 Build Tools 17.13.5
+      - name: Install Visual Studio 2022 Enterprise 17.13.5
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $targetVersion = '17.13.5'
           $targetBuild = '17.13.35919.96'
-          $installPath = 'C:\CTech\VS2022BuildTools-17.13.5'
-          $bootstrapper = Join-Path $env:RUNNER_TEMP 'vs_buildtools_17.13.5.exe'
+          $installPath = 'C:\CTech\VS2022Enterprise-17.13.5'
+          $bootstrapper = Join-Path $env:RUNNER_TEMP 'vs_enterprise_17.13.5.exe'
 
-          # Resolve Microsoft's fixed-version Build Tools bootstrapper from the
+          # Resolve Microsoft's fixed-version Enterprise bootstrapper from the
           # official Visual Studio 2022 release-history row for 17.13.5.
           $historyUri = 'https://learn.microsoft.com/en-us/visualstudio/releases/2022/release-history'
           $html = (Invoke-WebRequest -Uri $historyUri -UseBasicParsing).Content
@@ -123,18 +100,18 @@ jobs:
           $rowEnd = $html.IndexOf('</tr>', $versionIndex, [System.StringComparison]::OrdinalIgnoreCase)
           if ($rowStart -lt 0 -or $rowEnd -lt 0) { throw "Could not isolate Visual Studio $targetVersion release-history row" }
           $rowHtml = $html.Substring($rowStart, ($rowEnd + 5) - $rowStart)
-          $link = [regex]::Match($rowHtml, '(?is)<a\b[^>]*href=["''](?<url>[^"'']+)["''][^>]*>\s*Build Tools\s*</a>')
-          if (-not $link.Success) { throw "Build Tools bootstrapper link not found for Visual Studio $targetVersion" }
+          $link = [regex]::Match($rowHtml, '(?is)<a\b[^>]*href=["''](?<url>[^"'']+)["''][^>]*>\s*Enterprise\s*</a>')
+          if (-not $link.Success) { throw "Enterprise bootstrapper link not found for Visual Studio $targetVersion" }
           $bootstrapperUri = [System.Net.WebUtility]::HtmlDecode($link.Groups['url'].Value)
           if ($bootstrapperUri -notmatch '^https://download[.]visualstudio[.]microsoft[.]com/') {
-            throw "Unexpected Build Tools bootstrapper host: $bootstrapperUri"
+            throw "Unexpected Enterprise bootstrapper host: $bootstrapperUri"
           }
 
           Invoke-WebRequest -Uri $bootstrapperUri -OutFile $bootstrapper
           $bootstrapperVersion = (Get-Item $bootstrapper).VersionInfo.ProductVersion
           Write-Host "Fixed-version bootstrapper: $bootstrapperVersion"
           if ($bootstrapperVersion -notmatch '^17[.]13[.]5(?:[+.]|$)') {
-            throw "Unexpected Build Tools bootstrapper version: $bootstrapperVersion"
+            throw "Unexpected Enterprise bootstrapper version: $bootstrapperVersion"
           }
 
           $arguments = @(
@@ -143,14 +120,14 @@ jobs:
             '--norestart',
             '--nocache',
             '--installPath', $installPath,
-            '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+            '--add', 'Microsoft.VisualStudio.Workload.NativeDesktop',
             '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
             '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
-            '--add', 'Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools',
+            '--add', 'Microsoft.VisualStudio.Workload.ManagedDesktop',
             '--includeRecommended'
           )
           $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
-          Write-Host "Build Tools bootstrapper exit code: $($process.ExitCode)"
+          Write-Host "Enterprise bootstrapper exit code: $($process.ExitCode)"
 
           $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
           if (-not (Test-Path $vswhere)) { throw "vswhere missing after bootstrapper: $vswhere" }
@@ -158,11 +135,11 @@ jobs:
           Write-Host 'All Visual Studio instances after bootstrapper:'
           & $vswhere -all -products * -format json
 
-          $vsCandidates = @(& $vswhere -products Microsoft.VisualStudio.Product.BuildTools -version '[17.13,17.14)' -property installationPath | Where-Object { $_ })
-          $buildCandidates = @(& $vswhere -products Microsoft.VisualStudio.Product.BuildTools -version '[17.13,17.14)' -property installationVersion | Where-Object { $_ })
+          $vsCandidates = @(& $vswhere -products Microsoft.VisualStudio.Product.Enterprise -version '[17.13,17.14)' -property installationPath | Where-Object { $_ })
+          $buildCandidates = @(& $vswhere -products Microsoft.VisualStudio.Product.Enterprise -version '[17.13,17.14)' -property installationVersion | Where-Object { $_ })
 
           if ($process.ExitCode -notin @(0, 3010) -or -not $vsCandidates.Count) {
-            Write-Host 'Historical Build Tools instance was not registered. Dumping Visual Studio installer diagnostics.'
+            Write-Host 'Historical Enterprise instance was not registered. Dumping Visual Studio installer diagnostics.'
             Write-Host "Requested install path exists: $(Test-Path $installPath)"
             if (Test-Path $installPath) {
               Get-ChildItem $installPath -Force -ErrorAction SilentlyContinue | Select-Object -First 50 FullName
@@ -180,15 +157,15 @@ jobs:
             }
 
             if ($process.ExitCode -notin @(0, 3010)) {
-              throw "Visual Studio Build Tools installation failed with exit code $($process.ExitCode)"
+              throw "Visual Studio Enterprise installation failed with exit code $($process.ExitCode)"
             }
-            throw 'Visual Studio 2022 Build Tools 17.13 installation was not registered'
+            throw 'Visual Studio 2022 Enterprise 17.13 installation was not registered'
           }
 
           $vs = $vsCandidates[0]
           $installedBuild = if ($buildCandidates.Count) { $buildCandidates[0] } else { $null }
-          Write-Host "Historical Build Tools installation: $vs"
-          Write-Host "Historical Build Tools build: $installedBuild"
+          Write-Host "Historical Enterprise installation: $vs"
+          Write-Host "Historical Enterprise build: $installedBuild"
           if ($installedBuild -ne $targetBuild) {
             throw "Expected Visual Studio build $targetBuild but found $installedBuild"
           }
@@ -216,14 +193,23 @@ jobs:
             Write-Host "Verified $arch compiler: $($compilers -join ', ')"
           }
 
-          # Build Tools lacks the MSTest V1 reference used by upstream DTF tests.
           $legacyReference = Join-Path $vs 'Common7\IDE\PublicAssemblies\Microsoft.VisualStudio.QualityTools.UnitTestFramework.dll'
-          New-Item -ItemType Directory -Path (Split-Path $legacyReference -Parent) -Force | Out-Null
-          Copy-Item -LiteralPath $env:CTECH_MSTEST_V1_PATH -Destination $legacyReference
-          if ((Get-FileHash $legacyReference -Algorithm SHA256).Hash -ne $env:CTECH_MSTEST_V1_SHA256) {
-            throw 'Legacy MSTest reference changed during restoration'
+          if (-not (Test-Path $legacyReference)) { throw "Enterprise legacy MSTest V1 reference missing: $legacyReference" }
+          $identity = [System.Reflection.AssemblyName]::GetAssemblyName($legacyReference).FullName
+          if ($identity -ne 'Microsoft.VisualStudio.QualityTools.UnitTestFramework, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a') {
+            throw "Unexpected legacy MSTest assembly identity: $identity"
           }
-          Write-Host "Restored original Microsoft test reference: $legacyReference"
+          Write-Host "Installed legacy MSTest identity: $identity"
+          Write-Host "Installed legacy MSTest SHA-256: $((Get-FileHash $legacyReference -Algorithm SHA256).Hash)"
+
+          # Match MsbuildRunner's unmodified discovery, including its default SKU filter.
+          $testInstances = @(& $vswhere -property installationPath -version '[17.0,18.0)' | Where-Object { $_ })
+          if ($testInstances.Count -ne 1 -or $testInstances[0] -ne $vs) { throw "Upstream SDK test discovery did not select only pinned Enterprise: $($testInstances -join ', ')" }
+          foreach ($relative in @('MSBuild\Current\Bin\MSBuild.exe', 'MSBuild\Current\Bin\amd64\MSBuild.exe')) {
+            $testMsbuild = Join-Path $testInstances[0] $relative
+            if (-not (Test-Path $testMsbuild)) { throw "Upstream SDK test MSBuild missing: $testMsbuild" }
+            Write-Host "Verified upstream SDK test discovery: $testMsbuild"
+          }
 
           "CTECH_VSROOT=$vs" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "CTECH_VSDEVCMD=$devCmd" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
@@ -234,7 +220,7 @@ jobs:
         run: |
           dotnet --list-sdks
           dotnet --list-runtimes
-          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -products Microsoft.VisualStudio.Product.BuildTools -version '[17.13,17.14)' -property installationVersion
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -products Microsoft.VisualStudio.Product.Enterprise -version '[17.13,17.14)' -property installationVersion
           & "$env:CTECH_MSBUILD" -version
 
       - name: Install x86 .NET 6 runtime for Burn integration helper executables

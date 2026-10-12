@@ -139,8 +139,6 @@ jobs:
             '-p:CheckEolTargetFramework=false'
             '-p:DebugType=portable'
             '-p:DebugSymbols=true'
-            '-p:IncludeSymbols=true'
-            '-p:SymbolPackageFormat=snupkg'
             '-warnAsMessage:NU1901,NU1902,NU1903,NU1904,NETSDK1138'
           )
           [System.IO.File]::AppendAllText($rsp, [Environment]::NewLine + ($msbuildOptions -join [Environment]::NewLine) + [Environment]::NewLine)
@@ -282,6 +280,61 @@ jobs:
           if errorlevel 1 exit /b 1
           call src\internal\finalize.cmd release
           exit /b %errorlevel%
+
+      - name: Pack managed portable symbols separately (no rebuild or source edits)
+        shell: pwsh
+        working-directory: wix-source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifacts = Join-Path $PWD 'build/artifacts'
+          $scratch = Join-Path $env:RUNNER_TEMP 'ctech-symbol-packages'
+          New-Item -ItemType Directory -Path $scratch -Force | Out-Null
+
+          # The WiX source contains both SDK-style assemblies and custom .nuspec
+          # packages. NuGet raises NU5005 when IncludeSymbols is forced on the
+          # custom nuspec projects. Keep normal upstream packing untouched,
+          # then pack portable symbols only for C# SDK-style library projects.
+          $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = (& $vswhere -latest -products * -version '[17.0,18.0)' -property installationPath).Trim()
+          $msbuild = Join-Path $vs 'MSBuild\Current\Bin\amd64\MSBuild.exe'
+          if (-not (Test-Path $msbuild)) { throw "MSBuild not found: $msbuild" }
+
+          $packages = @(Get-ChildItem $artifacts -Filter '*.nupkg' -File)
+          if (-not $packages.Count) { throw 'No binary packages to associate symbol packages with' }
+
+          $report = [System.Collections.Generic.List[object]]::new()
+          $candidates = @(Get-ChildItem 'src' -Recurse -Filter '*.csproj' -File |
+            Where-Object {
+              $packageFile = Join-Path $artifacts "$($_.BaseName).6.0.2-ctech.nupkg"
+              (Test-Path $packageFile) -and
+              -not @(Get-ChildItem $_.DirectoryName -Filter '*.nuspec' -File).Count
+            } | Sort-Object FullName -Unique)
+          Write-Host "Found $($candidates.Count) SDK-style C# package projects without custom nuspec."
+
+          foreach ($project in $candidates) {
+            $outDir = Join-Path $scratch $project.BaseName
+            New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+            Write-Host "Packing portable symbols: $($project.BaseName)"
+            & $msbuild $project.FullName '-t:Pack' '-p:Configuration=Release' '-p:NoBuild=true' '-p:IncludeSymbols=true' '-p:SymbolPackageFormat=snupkg' "-p:PackageOutputPath=$outDir" '-nologo' '-v:minimal'
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) { throw "Symbol Pack failed for $($project.FullName) with code $exitCode" }
+
+            $symbol = Join-Path $outDir "$($project.BaseName).6.0.2-ctech.snupkg"
+            if (Test-Path $symbol) {
+              Copy-Item -LiteralPath $symbol -Destination $artifacts -Force
+              $state = 'created'
+            } else {
+              # Resource-only or packaging-only projects have no Portable PDB.
+              $state = 'no-portable-pdb'
+            }
+            $report.Add([pscustomobject]@{ Project=$project.FullName; Status=$state })
+          }
+
+          $report | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $artifacts 'ctech-symbols-report.json') -Encoding utf8
+          $found = @(Get-ChildItem $artifacts -Filter '*.snupkg' -File)
+          if (-not $found.Count) { throw 'No supported SDK-style project produced a .snupkg' }
+          Write-Host "Portable symbol packages produced: $($found.Count)"
+          $report | Format-Table -AutoSize
 
       - name: Validate symbol packages contain portable PDBs
         shell: pwsh
@@ -433,6 +486,7 @@ jobs:
             wix-source/build/artifacts/*.nupkg
             wix-source/build/artifacts/*.snupkg
             wix-source/build/artifacts/ctech-manifest.json
+            wix-source/build/artifacts/ctech-symbols-report.json
           if-no-files-found: warn
           retention-days: 7
           compression-level: 0

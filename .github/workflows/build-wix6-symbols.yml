@@ -305,13 +305,238 @@ jobs:
           if (-not $packages.Count) { throw 'No binary packages to associate symbol packages with' }
 
           $report = [System.Collections.Generic.List[object]]::new()
-          $candidates = @(Get-ChildItem 'src' -Recurse -Filter '*.csproj' -File |
+          $allCandidates = @(Get-ChildItem 'src' -Recurse -Filter '*.csproj' -File |
             Where-Object {
               $packageFile = Join-Path $artifacts "$($_.BaseName).6.0.2-ctech.nupkg"
               (Test-Path $packageFile) -and
               -not @(Get-ChildItem $_.DirectoryName -Filter '*.nuspec' -File).Count
             } | Sort-Object FullName -Unique)
-          Write-Host "Found $($candidates.Count) SDK-style C# package projects without custom nuspec."
+
+          # WiX extension packages use WixExt.props: IncludeBuildOutput=false,
+          # SuppressDependenciesWhenPacking=true, and a custom wixext6 layout.
+          # Standard SDK -IncludeSymbols/Pack cannot package these projects
+          # (NU5017: no dependencies nor content); do not change their nupkg.
+          # Keep the original extension binaries and PDBs in their own outputs.
+          $customPackProjects = @($allCandidates | Where-Object {
+            $_.BaseName -match '[.]wixext
+
+          foreach ($project in $candidates) {
+            $outDir = Join-Path $scratch $project.BaseName
+            New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+            Write-Host "Rebuilding and packing Portable PDB symbols: $($project.BaseName)"
+            & $msbuild $project.FullName '-t:Rebuild;Pack' '-p:Configuration=Release' '-p:NoBuild=false' '-p:BuildProjectReferences=false' '-p:DebugType=portable' '-p:DebugSymbols=true' '-p:IncludeSymbols=true' '-p:SymbolPackageFormat=snupkg' "-p:PackageOutputPath=$outDir" '-nologo' '-v:minimal'
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) { throw "C# rebuild/Pack failed for $($project.FullName) with code $exitCode" }
+
+            $binary = Join-Path $outDir "$($project.BaseName).6.0.2-ctech.nupkg"
+            $symbol = Join-Path $outDir "$($project.BaseName).6.0.2-ctech.snupkg"
+            if (-not (Test-Path $binary)) { throw "Expected rebuilt binary package missing: $binary" }
+            if (Test-Path $symbol) {
+              Copy-Item -LiteralPath $binary -Destination $artifacts -Force
+              Copy-Item -LiteralPath $symbol -Destination $artifacts -Force
+              $state = 'created (matched binaries and symbols)'
+            } else {
+              # Do not overwrite original binaries without a matching symbol package.
+              # Resource-only or packaging-only projects might lack Portable PDBs.
+              $state = 'no-portable-pdb (original nupkg preserved)'
+            }
+            $report.Add([pscustomobject]@{ Project=$project.FullName; Status=$state })
+          }
+
+          $report | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $artifacts 'ctech-symbols-report.json') -Encoding utf8
+          $found = @(Get-ChildItem $artifacts -Filter '*.snupkg' -File)
+          if (-not $found.Count) { throw 'No supported SDK-style project produced a .snupkg' }
+          Write-Host "Portable symbol packages produced: $($found.Count)"
+          $report | Format-Table -AutoSize
+
+      - name: Validate symbol packages contain portable PDBs
+        shell: pwsh
+        working-directory: wix-source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $dir = Join-Path $PWD 'build/artifacts'
+          $symbols = @(Get-ChildItem $dir -Filter '*.snupkg' -File)
+          if (-not $symbols.Count) { throw 'No .snupkg files generated. Symbol build is incomplete.' }
+          foreach ($pkg in $symbols) {
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($pkg.FullName)
+            try {
+              $nuspec = @($zip.Entries | Where-Object { $_.FullName -match '^[^/]+\.nuspec$' })
+              if ($nuspec.Count -ne 1) { throw "Missing nuspec in $($pkg.Name)" }
+              $reader = [System.IO.StreamReader]::new($nuspec[0].Open())
+              try { [xml]$xml = $reader.ReadToEnd() } finally { $reader.Dispose() }
+              $id = [string]$xml.package.metadata.id
+              $version = [string]$xml.package.metadata.version
+              if ($version -ne '6.0.2-ctech') { throw "Unexpected $id symbol version $version" }
+              if (-not (Test-Path (Join-Path $dir "$id.$version.nupkg"))) { throw "Missing binary counterpart to $($pkg.Name)" }
+              $pdbs = @($zip.Entries | Where-Object { $_.Name -match '\.pdb$' })
+              if (-not $pdbs.Count) { throw "No PDB files in $($pkg.Name)" }
+              foreach ($pdb in $pdbs) {
+                $stream = $pdb.Open()
+                try {
+                  $magic = [byte[]]::new(4)
+                  $count = $stream.Read($magic, 0, 4)
+                  if ($count -ne 4 -or [System.Text.Encoding]::ASCII.GetString($magic) -ne 'BSJB') {
+                    throw "Unsupported Windows PDB instead of Portable PDB: $($pkg.Name)/$($pdb.FullName)"
+                  }
+                } finally { $stream.Dispose() }
+              }
+              Write-Host "$($pkg.Name): $($pdbs.Count) portable PDB(s)"
+            } finally { $zip.Dispose() }
+          }
+          Write-Host "Validated $($symbols.Count) .snupkg packages."
+          Write-Host 'Native Windows PDBs are separately preserved in wix-pdbs ZIP.'
+
+      - name: Inspect and verify produced NuGet packages
+        shell: pwsh
+        working-directory: wix-source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $dir = Join-Path $PWD 'build/artifacts'
+          if (-not (Test-Path $dir)) { throw "Missing build/artifacts" }
+          $packages = @(Get-ChildItem $dir -File | Where-Object { $_.Name -match '\.(nupkg|snupkg)$' })
+          if (-not $packages.Count) { throw "No NuGet packages produced" }
+          $results = foreach ($pkg in $packages) {
+            if ($pkg.Extension -eq '.snupkg') {
+              [pscustomobject]@{ file=$pkg.Name; packageId=$null; version=$null; sha256=(Get-FileHash $pkg.FullName -Algorithm SHA256).Hash; dependencies=@() }
+              continue
+            }
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($pkg.FullName)
+            try {
+              $nuspec = @($zip.Entries | Where-Object { $_.FullName -match '^[^/]+\.nuspec$' })
+              if ($nuspec.Count -ne 1) { throw "Expected exactly one nuspec in $($pkg.Name)" }
+              $reader = [System.IO.StreamReader]::new($nuspec[0].Open())
+              try { [xml]$xml = $reader.ReadToEnd() } finally { $reader.Dispose() }
+              $meta = $xml.package.metadata
+              $id = [string]$meta.id
+              $ver = [string]$meta.version
+              if ($ver -ne '6.0.2-ctech') { throw "Unexpected version $id $ver in $($pkg.Name)" }
+              $deps = @($xml.SelectNodes('//*[local-name()="dependency"]') | ForEach-Object {
+                [pscustomobject]@{ id = $_.GetAttribute('id'); version = $_.GetAttribute('version') }
+              })
+              foreach ($dep in $deps) {
+                if ($dep.id -match '^(?i:WixToolset\.|WixInternal\.|wix$)' -and
+                    $dep.version -notmatch '6\.0\.2-ctech') {
+                  throw "Unpatched WiX dependency: $id -> $($dep.id) $($dep.version)"
+                }
+              }
+              [pscustomobject]@{ file=$pkg.Name; packageId=$id; version=$ver; sha256=(Get-FileHash $pkg.FullName -Algorithm SHA256).Hash; dependencies=$deps }
+            } finally {
+              $zip.Dispose()
+            }
+          }
+          if (-not ($results | Where-Object { $_.packageId -eq 'WixToolset.Sdk' })) {
+            throw 'Missing WixToolset.Sdk package'
+          }
+          if (-not ($results | Where-Object { $_.packageId -eq 'wix' })) {
+            throw 'Missing wix CLI package'
+          }
+          $results | Sort-Object packageId | ConvertTo-Json -Depth 8 | Set-Content -Path "$dir/ctech-manifest.json" -Encoding utf8
+          $results | Sort-Object packageId | Format-Table packageId,version,file -AutoSize
+          Write-Host "Validated $($packages.Count) NuGet files."
+
+      - name: Capture entire modified source tree and exact Git patch
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = Join-Path $env:GITHUB_WORKSPACE 'wix-source'
+          if (-not (Test-Path (Join-Path $source '.git'))) {
+            Write-Warning 'Checkout is unavailable; no source snapshot possible.'
+            exit 0
+          }
+          $archiveRoot = Join-Path $env:GITHUB_WORKSPACE 'source-snapshot'
+          $sourceCopy = Join-Path $archiveRoot 'wix-source'
+          $inspection = Join-Path $archiveRoot 'inspection'
+          New-Item -ItemType Directory -Path $sourceCopy,$inspection -Force | Out-Null
+          (& git -C $source rev-parse HEAD) | Set-Content (Join-Path $inspection 'upstream-commit.txt')
+          (& git -C $source status --short --untracked-files=normal) | Set-Content (Join-Path $inspection 'git-status.txt')
+          (& git -C $source diff --binary) | Set-Content (Join-Path $inspection 'source-modifications.patch') -Encoding utf8
+          (& git -C $source diff --name-status) | Set-Content (Join-Path $inspection 'changed-files.txt') -Encoding utf8
+          (& git -C $source diff --stat) | Set-Content (Join-Path $inspection 'change-summary.txt') -Encoding utf8
+          @'
+          This snapshot contains the cloned WiX v6.0.2 working tree AS MODIFIED
+          by the workflow, including version templates and generated global.json
+          and Directory.Packages.props. It is captured even if the build fails.
+          Excluded: .git metadata and root build/packages output directories.
+          Binary outputs and logs are separate artifacts.
+          The inspection folder contains upstream SHA and the exact git diff.
+          '@ | Set-Content (Join-Path $inspection 'README.txt') -Encoding utf8
+          $excluded = @(
+            (Join-Path $source '.git')
+            (Join-Path $source 'build')
+            (Join-Path $source 'packages')
+          )
+          & robocopy.exe $source $sourceCopy /E /XD $excluded /R:1 /W:1 /NFL /NDL /NP /NJH /NJS | Out-Null
+          if ($LASTEXITCODE -gt 7) { throw "robocopy source snapshot failed: $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
+          $expected = Join-Path $sourceCopy 'src/internal/SetBuildNumber/SomeVerInfo.props.pp'
+          if (-not (Test-Path $expected)) { throw 'Snapshot missing version template' }
+          if (-not ((Get-Content $expected -Raw).Contains('-ctech'))) {
+            Write-Warning 'Snapshot captured before CTech versioning stage ran; original upstream source was preserved.'
+          }
+          Write-Host "Modified source snapshot created: $sourceCopy"
+
+      - name: Upload modified source snapshot
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wix6-ctech-symbol-build-source
+          path: source-snapshot/
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 6
+          include-hidden-files: true
+
+      - name: Upload NuGet packages
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wix6-ctech-symbol-build-packages
+          path: |
+            wix-source/build/artifacts/*.nupkg
+            wix-source/build/artifacts/*.snupkg
+            wix-source/build/artifacts/ctech-manifest.json
+            wix-source/build/artifacts/ctech-symbols-report.json
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload other build outputs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wix6-ctech-symbol-build-other
+          path: |
+            wix-source/build/artifacts/*.zip
+            wix-source/build/artifacts/*.msi
+            wix-source/build/artifacts/*.exe
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload diagnostic logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wix6-ctech-symbol-build-debug
+          path: wix-source/build/logs/
+          if-no-files-found: warn
+          retention-days: 7
+ -or
+            (Select-String -LiteralPath $_.FullName -Pattern 'WixExt[.]props|<IncludeBuildOutput>\\s*false' -Quiet)
+          })
+          foreach ($project in $customPackProjects) {
+            Write-Host "Skipping custom WiX extension package for standard snupkg: $($project.BaseName)"
+            $report.Add([pscustomobject]@{
+              Project = $project.FullName
+              Status = 'custom-wix-extension-package (original nupkg retained; not standard SDK snupkg)'
+            })
+          }
+          $excludedPaths = @($customPackProjects | ForEach-Object { $_.FullName })
+          $candidates = @($allCandidates | Where-Object { $_.FullName -notin $excludedPaths })
+          Write-Host "Found $($candidates.Count) standard-packable C# projects; excluded $($customPackProjects.Count) custom WiX extension projects."
 
           foreach ($project in $candidates) {
             $outDir = Join-Path $scratch $project.BaseName

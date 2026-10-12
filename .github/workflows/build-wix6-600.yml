@@ -121,6 +121,7 @@ jobs:
             '--installPath', $installPath,
             '--add', 'Microsoft.VisualStudio.Workload.VCTools',
             '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+            '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
             '--add', 'Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools',
             '--includeRecommended'
           )
@@ -176,9 +177,20 @@ jobs:
           $vcToolsRoot = Join-Path $vs 'VC\Tools\MSVC'
           $vcToolsets = @(Get-ChildItem $vcToolsRoot -Directory -ErrorAction SilentlyContinue | Sort-Object Name)
           if (-not $vcToolsets.Count) {
-            throw "MSVC v143 x86/x64 toolset was not installed under $vcToolsRoot"
+            throw "MSVC v143 toolset was not installed under $vcToolsRoot"
           }
           Write-Host "Installed MSVC toolsets: $($vcToolsets.Name -join ', ')"
+
+          # SfxCA builds x86, x64 and ARM64; a toolset folder alone is insufficient.
+          foreach ($arch in @('x86', 'x64', 'arm64')) {
+            $compilers = @($vcToolsets | ForEach-Object {
+              Join-Path $_.FullName "bin\Hostx64\$arch\cl.exe"
+            } | Where-Object { Test-Path $_ })
+            if (-not $compilers.Count) {
+              throw "MSVC v143 compiler missing for $arch under $vcToolsRoot"
+            }
+            Write-Host "Verified $arch compiler: $($compilers -join ', ')"
+          }
 
           "CTECH_VSROOT=$vs" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "CTECH_VSDEVCMD=$devCmd" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
@@ -627,7 +639,7 @@ jobs:
               })
               foreach ($dep in $deps) {
                 if ($dep.id -match '^(?i:WixToolset\.|WixInternal\.|wix$)' -and
-                    $dep.version -notmatch '6\.0\.2\.1') {
+                    $dep.version -notmatch '6\.0\.0\.1') {
                   throw "Unpatched WiX dependency: $id -> $($dep.id) $($dep.version)"
                 }
               }
@@ -645,6 +657,26 @@ jobs:
           $results | Sort-Object packageId | ConvertTo-Json -Depth 8 | Set-Content -Path "$dir/ctech-manifest.json" -Encoding utf8
           $results | Sort-Object packageId | Format-Table packageId,version,file -AutoSize
           Write-Host "Validated $($packages.Count) NuGet files."
+
+      - name: Verify upstream source changes after build
+        shell: pwsh
+        working-directory: wix-source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Upstream diff has whitespace errors' }
+          $allowed = @(
+            'src/internal/SetBuildNumber/SomeVerInfo.props.pp',
+            'src/internal/SetBuildNumber/Directory.Packages.props.pp',
+            'src/internal/SetBuildNumber/global.json.pp'
+          )
+          $changed = @(git diff --name-only | Where-Object { $_ })
+          if ($LASTEXITCODE -ne 0) { throw 'Could not inspect upstream source changes' }
+          $unexpected = @($changed | Where-Object { $_ -notin $allowed })
+          if ($unexpected.Count -or $changed.Count -ne 3) {
+            throw "Unexpected upstream source changes after build: $($changed -join ', ')"
+          }
+          Write-Host 'Verified: only the three permitted versioning templates changed.'
 
       - name: Upload NuGet packages
         uses: actions/upload-artifact@v4
@@ -665,4 +697,13 @@ jobs:
           name: wix6-ctech-6.0.0.1-additional-tools
           path: wix-source/build/artifacts/WixAdditionalTools.exe
           if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload build and test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wix6-ctech-6.0.0.1-build-logs
+          path: wix-source/build/logs/
+          if-no-files-found: warn
           retention-days: 7

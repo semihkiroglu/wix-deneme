@@ -352,6 +352,15 @@ jobs:
           if not exist "%WIX_EXTENSIONS%\.wix\extensions\WixToolset.Util.wixext\6.0.2.1\wixext6\WixToolset.Util.wixext.dll" exit /b 1
           call src\ext\ext.cmd release inc
           if errorlevel 1 exit /b 1
+          rem Upstream test reference has Powershell casing; canonical entry point preserves official package identity.
+          msbuild "src\ext\PowerShell\wixext\WixToolset.PowerShell.wixext.csproj" -Restore -t:Rebuild -p:Configuration=Release -p:BuildProjectReferences=false -tl -nologo -warnaserror -bl:build\logs\powershell_canonical_build.binlog
+          if errorlevel 1 exit /b 1
+          msbuild "src\ext\PowerShell\test\WixToolsetTest.PowerShell\WixToolsetTest.Powershell.csproj" -t:Rebuild;Test -p:Configuration=Release -p:BuildProjectReferences=false -tl -nologo -warnaserror -bl:build\logs\powershell_canonical_test.binlog
+          if errorlevel 1 exit /b 1
+          del "build\artifacts\WixToolset.Powershell.wixext.6.0.2.1.nupkg"
+          if errorlevel 1 exit /b 1
+          msbuild "src\ext\PowerShell\wixext\WixToolset.PowerShell.wixext.csproj" -t:Pack -p:Configuration=Release -p:NoBuild=true -p:BuildProjectReferences=false -tl -nologo -warnaserror -bl:build\logs\powershell_canonical_pack.binlog
+          if errorlevel 1 exit /b 1
           call src\setup\setup.cmd release
           if errorlevel 1 exit /b 1
           call src\test\test.cmd release

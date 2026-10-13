@@ -18,6 +18,7 @@ $script:Failed = 0
 $script:Work = Join-Path ([System.IO.Path]::GetTempPath()) ('wix-publish-tests-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $script:Work | Out-Null
 
+Add-Type -AssemblyName System.IO.Compression
 try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop } catch { }
 try { Add-Type -AssemblyName System.Net.Http -ErrorAction Stop } catch { }
 
@@ -50,6 +51,7 @@ if (-not (Test-Path $script:Publisher)) {
 $script:MockServer = @'
 param([string]$ConfigPath)
 $ErrorActionPreference = 'Continue'
+Add-Type -AssemblyName System.IO.Compression
 try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop } catch { }
 $config = ConvertFrom-Json ([System.IO.File]::ReadAllText($ConfigPath))
 $state = [string]$config.stateDir

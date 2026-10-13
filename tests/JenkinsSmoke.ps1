@@ -50,11 +50,16 @@ $stdout=Join-Path $Evidence 'jenkins-server.log'; $stderr=Join-Path $Evidence 'j
 $server=Start-Process 'java' -ArgumentList @('-Djenkins.install.runSetupWizard=false','-jar',"`"$war`"",'--httpPort=8081','--httpListenAddress=127.0.0.1') -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
 $base='http://127.0.0.1:8081'
 $build=$null
+$consoleOffset=0
 try {
     $deadline=[DateTime]::UtcNow.AddHours(4)
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($server.HasExited) { throw "Jenkins exited with code $($server.ExitCode)" }
         try { $build=Invoke-RestMethod "$base/job/wix-docker/1/api/json" -TimeoutSec 15 } catch { $build=$null }
+        try {
+            $console=[string](Invoke-WebRequest "$base/job/wix-docker/1/consoleText" -TimeoutSec 15).Content
+            if ($console.Length -gt $consoleOffset) { Write-Host $console.Substring($consoleOffset); $consoleOffset=$console.Length }
+        } catch { }
         if ($null -ne $build -and -not $build.building -and $build.result) { break }
         Start-Sleep -Seconds 15
     }

@@ -331,7 +331,7 @@ function Get-GitHubReleases {
         $uri = $ApiBase.TrimEnd('/') + '/repos/' + $Repository + '/releases?per_page=100&page=' + $page
         $response = Send-FeedRequest -Method 'GET' -Uri $uri -ReadText -ExtraHeaders $headers
         if ($response.Status -ne 200) { throw "GitHub releases API $uri returned HTTP $($response.Status)" }
-        $pageItems = @(ConvertFrom-Json $response.Text)
+        $pageItems = @(ConvertFrom-Json $response.Text | ForEach-Object { $_ })
         if (-not $pageItems.Count) { break }
         $releases += $pageItems
         if ($pageItems.Count -lt 100) { break }

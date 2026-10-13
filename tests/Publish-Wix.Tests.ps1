@@ -364,9 +364,9 @@ $script:MultiReleases = New-ReleasesJson @('v7.1.0', 'v7.0.1', 'v6.0.2', 'v7.0.0
 Write-Host ''
 Write-Host '== release tag selection =='
 $selection = @(Select-WixStableReleaseTags -Releases (ConvertFrom-Json (New-ReleasesJson @('v7.1.0', 'v7.0.1', 'v6.0.2', 'v7.0.0', 'v7.0.0-rc.2', 'v8.1.0', 'v8.0.0', 'v7.0.0.1'))) -MinVersion '7.0.0')
-$draft = @(ConvertFrom-Json (New-ReleasesJson @('v9.0.0')))
+$draft = @(ConvertFrom-Json (New-ReleasesJson @('v9.0.0')) | ForEach-Object { $_ })
 $draft[0].draft = $true
-$selectionWithDraft = @(Select-WixStableReleaseTags -Releases (@($draft) + @(ConvertFrom-Json (New-ReleasesJson @('v7.0.0-rc.1', 'v7.0.0')))) -MinVersion '7.0.0')
+$selectionWithDraft = @(Select-WixStableReleaseTags -Releases (@($draft) + @(ConvertFrom-Json (New-ReleasesJson @('v7.0.0-rc.1', 'v7.0.0')) | ForEach-Object { $_ })) -MinVersion '7.0.0')
 Assert-Equal 'v7.0.0,v7.0.1,v7.1.0,v8.0.0,v8.1.0' (($selection | ForEach-Object { $_.Tag }) -join ',') 'stable numeric tags >= 7.0.0, prerelease/4-part/draft/older excluded, ascending'
 Assert-Equal 'v7.0.0' (($selectionWithDraft | ForEach-Object { $_.Tag }) -join ',') 'draft and prerelease releases are excluded'
 $selVersions = @($selection | ForEach-Object { [string]$_.Version })

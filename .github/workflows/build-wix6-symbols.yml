@@ -2,10 +2,6 @@ name: Build WiX 6.0.2.1 (CTech Stable)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/build-wix6-symbols.yml'
 
 permissions:
   contents: read

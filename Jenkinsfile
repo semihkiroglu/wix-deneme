@@ -96,7 +96,7 @@ $outDir = Join-Path $ws ('artifacts\\' + $tag)
 $logDir = Join-Path $ws 'logs'
 New-Item -ItemType Directory -Force -Path $outDir, $logDir | Out-Null
 Write-Host "Windows host build $build -> $base"
-docker build -m 4GB --storage-opt size=120GB --build-arg "BASE_IMAGE=$base" -f (Join-Path $ws 'Dockerfile') -t $image $ws
+docker build --force-rm -m 4GB --storage-opt size=120GB --build-arg "BASE_IMAGE=$base" -f (Join-Path $ws 'Dockerfile') -t $image $ws
 if ($LASTEXITCODE -ne 0) { throw "docker build for $tag failed with $LASTEXITCODE" }
 docker create --name $container -v "${outDir}:C:\\output" $image -Tag $tag -Output 'C:\\output' | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "docker create for $tag failed with $LASTEXITCODE" }

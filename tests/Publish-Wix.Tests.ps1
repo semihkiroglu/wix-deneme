@@ -627,8 +627,13 @@ $hostExe = (Get-Process -Id $PID).Path
 $lines = @(& $hostExe -NoProfile -File $script:Publisher -Validate -ManifestDir $goodDir 2>&1 | ForEach-Object { [string]$_ })
 Assert-Equal 0 $LASTEXITCODE 'validate CLI exits 0 for a good manifest'
 Assert-True (([string]::Join("`n", $lines)).Contains('validated')) 'validate CLI reports the validated manifest'
-$lines = @(& $hostExe -NoProfile -File $script:Publisher -Validate -ManifestDir $shaDir 2>&1 | ForEach-Object { [string]$_ })
-Assert-Equal 1 $LASTEXITCODE 'validate CLI exits 1 for a manifest whose hash does not match'
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue' # this child is expected to write stderr and exit 1
+try {
+  $lines = @(& $hostExe -NoProfile -File $script:Publisher -Validate -ManifestDir $shaDir 2>&1 | ForEach-Object { [string]$_ })
+  $validationExit = $LASTEXITCODE
+} finally { $ErrorActionPreference = $previousPreference }
+Assert-Equal 1 $validationExit 'validate CLI exits 1 for a manifest whose hash does not match'
 Assert-True (([string]::Join("`n", $lines)).Contains('failed')) 'validate CLI reports the failure reason'
 
 $feed = Start-MockFeed -Options @{ ReleasesJson = $script:BasicReleases }

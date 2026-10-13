@@ -1,4 +1,4 @@
-# Installs the pinned CTech build environment into the Windows Server Core image.
+# Installs the pinned build environment in the disposable Windows Server Core container.
 # Runs under Windows PowerShell 5.1 (the only shell in the base image).
 # Every download below is an official Microsoft / PowerShell / git-for-windows /
 # NuGet source; versions are fixed so image rebuilds stay reproducible.

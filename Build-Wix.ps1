@@ -151,6 +151,12 @@ public static class PortableIdentity {
 if ($MyInvocation.InvocationName -eq '.') { return }
 $version = Get-InternalVersion $Tag
 if ($env:OS -ne 'Windows_NT') { throw 'WiX native build requires Windows' }
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    # Install in the disposable container; exporting the VS installation as a layer fails on Windows.
+    & (Join-Path $PSScriptRoot 'Install-BuildEnv.ps1')
+    & 'C:\tools\pwsh\pwsh.exe' -NoProfile -File $PSCommandPath -Tag $Tag -Output $Output
+    exit $LASTEXITCODE
+}
 $Output=[IO.Path]::GetFullPath($Output)
 New-Item -ItemType Directory -Force $Output | Out-Null
 $source=Join-Path $PWD 'wix-source'

@@ -58,7 +58,7 @@ try {
     $deadline=[DateTime]::UtcNow.AddHours(4)
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($server.HasExited) { throw "Jenkins exited with code $($server.ExitCode)" }
-        try { $build=Invoke-RestMethod "$base/job/wix-docker/1/api/json" -TimeoutSec 15 } catch { $build=$null }
+        try { $build=Invoke-RestMethod "$base/job/wix-docker/1/api/json" -TimeoutSec 15 } catch { Write-Warning "Jenkins status request failed; keeping last state: $($_.Exception.Message)" }
         try {
             $console=[string](Invoke-WebRequest "$base/job/wix-docker/1/consoleText" -TimeoutSec 15).Content
             if ($console.Length -gt $consoleOffset) { Write-Host $console.Substring($consoleOffset); $consoleOffset=$console.Length }

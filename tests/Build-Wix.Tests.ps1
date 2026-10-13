@@ -26,3 +26,33 @@ try {
     if (-not $rejected) { throw 'Changed upstream template silently accepted' }
 } finally { Remove-Item $root -Recurse -Force }
 Write-Host 'PASS: stable 7+ tags, rejection boundaries, exact three version replacements and incompatible-template rejection'
+
+# Exercise the actual smoke loop without starting Jenkins or downloading tooling.
+& {
+    $tokens=$null; $errors=$null
+    $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'JenkinsSmoke.ps1'),[ref]$tokens,[ref]$errors)
+    if ($errors.Count) { throw 'Jenkins smoke script parse failed' }
+    $loops=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.WhileStatementAst]},$true))
+    if ($loops.Count -ne 1) { throw 'Expected one Jenkins polling loop' }
+    $poll=[scriptblock]::Create($loops[0].Extent.Text)
+    $server=[pscustomobject]@{HasExited=$false}
+    $base='http://jenkins.invalid'
+    $deadline=[DateTime]::UtcNow.AddMinutes(1)
+    $startupDeadline=[DateTime]::UtcNow.AddMinutes(-1)
+    $build=$null; $consoleOffset=0; $script:polls=0
+    function Invoke-RestMethod {
+        param($Uri,$TimeoutSec)
+        $script:polls++
+        if ($script:polls -eq 2) { throw 'Expected temporary Jenkins status failure' }
+        return [pscustomobject]@{building=($script:polls -lt 3);result= $(if ($script:polls -ge 3) {'SUCCESS'} else {$null})}
+    }
+    function Invoke-WebRequest { param($Uri,$TimeoutSec) return [pscustomobject]@{Content='running'} }
+    function Start-Sleep { param($Seconds) }
+    . $poll 3>$null
+    if ($script:polls -ne 3 -or $build.result -ne 'SUCCESS') { throw 'Smoke loop did not recover from a temporary status failure' }
+    function Invoke-RestMethod { param($Uri,$TimeoutSec) throw 'Expected unavailable Jenkins job' }
+    $build=$null; $rejected=$false
+    try { . $poll 3>$null } catch { $rejected=$_.Exception.Message -match 'Jenkins job did not start' }
+    if (-not $rejected) { throw 'Smoke loop lost its hard startup deadline' }
+    Write-Host 'PASS: Jenkins status recovery after startup and hard initial startup deadline'
+}

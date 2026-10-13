@@ -147,14 +147,23 @@ if ($selected.Count -ne 1 -or $selected[0] -ne $VsRoot) {
 }
 
 # --- Serialized upstream MSBuild (container-only) ---------------------------
-# The solution's Win32 and reference's x86 instances write the same native recipe.
-# Keep upstream commands intact and forward them to the genuine compiler with -m:1.
-$serialMsbuild = 'C:\tools\msbuild\MSBuild.exe'
-New-Item -ItemType Directory -Force (Split-Path -Parent $serialMsbuild) | Out-Null
-& $csc /nologo /target:exe "/out:$serialMsbuild" (Join-Path $PSScriptRoot 'MsbuildBootstrap.cs')
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path $serialMsbuild)) { throw 'MSBuild launcher compilation failed' }
-& $serialMsbuild -version -nologo
-if ($LASTEXITCODE -ne 0) { throw 'Genuine MSBuild launcher preflight failed' }
+# Upstream solution's Win32 and reference's x86 instances share one native
+# recipe; append -m:1 to every upstream msbuild invocation by intercepting the
+# bare command name. The directory holds only the .cmd shim, never an
+# msbuild.exe, so NuGet's PATH scan (which only looks for msbuild.exe) falls
+# through to the genuine compiler installed by VsDevCmd.
+$serialDir = 'C:\tools\msbuild'
+New-Item -ItemType Directory -Force $serialDir | Out-Null
+@'
+@echo off
+rem Forward to the genuine MSBuild installed by VsDevCmd and append -m:1 to
+rem override any upstream -m. The shim name is msbuild.cmd so PATHEXT resolves
+rem it for upstream calls; nuget.exe auto-detection probes msbuild.exe and
+rem falls through to the real compiler in the next PATH entry.
+"%CTECH_MSBUILD%" %* -m:1
+'@ | Set-Content -LiteralPath (Join-Path $serialDir 'msbuild.cmd') -Encoding ASCII
+$shim = Join-Path $serialDir 'msbuild.cmd'
+if (-not (Test-Path -LiteralPath $shim)) { throw 'msbuild.cmd shim missing after creation' }
 
 # --- Selected .NET SDKs and x86 runtimes ------------------------------------
 # The image contains only these SDKs, so unlike the disposable GitHub runner no

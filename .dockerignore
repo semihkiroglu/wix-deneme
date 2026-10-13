@@ -2,5 +2,4 @@
 !Dockerfile
 !Install-BuildEnv.ps1
 !VswhereBootstrap.cs
-!MsbuildBootstrap.cs
 !Build-Wix.ps1

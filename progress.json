@@ -1,0 +1,6 @@
+{
+  "status": "in_progress",
+  "phase": "fix_msbuild_wrapper",
+  "blocker": null,
+  "diagnosis": "Invoke-Upstream prepends C:\\tools\\msbuild to PATH. NuGet autolocates msbuild.exe there and reads the wrapper's 0.0.0.0 product version, failing slnx restore. Replace wrapper.exe with wrapper.cmd so PATH entry stays first (upstream msbuild invocations resolve through it) but NuGet's msbuild.exe probe falls through to VsDevCmd's genuine compiler."
+}

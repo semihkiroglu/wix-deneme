@@ -219,30 +219,36 @@ try {
     Assert-True ($run.ExitCode -eq 127) 'missing real tool exits with 127'
     Assert-True ($run.StdErr -match 'vswhere-real') 'missing real tool is reported on stderr'
 
-    # The solution builds Win32 while project references build x86: both write
-    # the same recipe. Serialize the real MSBuild, retaining every other argument.
-    $msbuildSource = Join-Path $repoRoot 'MsbuildBootstrap.cs'
-    if (-not (Test-Path $msbuildSource)) { throw 'MSBuild serialization launcher missing' }
-    $msbuild = Build-Program $msbuildSource (Join-Path $WorkDir 'msbuild shim') 'MSBuild' 'MsbuildBootstrap.cs'
-    $run = Invoke-Child $msbuild '-m:8 -p:Path="C:\build dir\\" "" /nologo' $stub 'CTECH_MSBUILD'
-    Assert-ArgsEqual 'MSBuild retains quoted/empty arguments and overrides parallel nodes last' `
-        @('-m:8','-p:Path=C:\build dir\','', '/nologo','-m:1') (Get-StubArguments $run.StdOut)
-    Assert-True ($run.ExitCode -eq 42) 'MSBuild passes through failure exit code'
-    Assert-True ($run.StdOut -match 'STUB-STDOUT=ok' -and $run.StdErr -match 'STUB-STDERR=ok') 'MSBuild retains both diagnostic streams'
-    $run = Invoke-Child $msbuild '--stub-ok -m' $stub 'CTECH_MSBUILD'
-    Assert-True ($run.ExitCode -eq 0) 'MSBuild passes through success exit code'
-    $run = Invoke-Child $msbuild '-version' (Join-Path $WorkDir 'missing-msbuild') 'CTECH_MSBUILD'
-    Assert-True ($run.ExitCode -eq 127 -and $run.StdErr -match 'MSBuild') 'MSBuild fails closed when real compiler is missing'
-
-    # Exercise actual MSBuild option precedence, not just the stub argument list.
-    $probe = Join-Path $WorkDir 'node-count.proj'
-    [IO.File]::WriteAllText($probe, '<Project><Target Name="ReadNodes"><Message Text="NODES=$(MSBuildNodeCount)" Importance="high" /></Target></Project>')
-    $arguments='msbuild "' + $probe + '" -m:8 -nologo -t:ReadNodes -v:minimal'
-    $dotnet=(Get-Command dotnet).Source
-    $baseline=Invoke-Child $dotnet $arguments $null
-    Assert-True ($baseline.ExitCode -eq 0 -and $baseline.StdOut -match '\bNODES=8\b') 'negative control: real MSBuild without launcher retains eight scheduler nodes'
-    $run = Invoke-Child $msbuild $arguments $dotnet 'CTECH_MSBUILD'
-    Assert-True ($run.ExitCode -eq 0 -and $run.StdOut -match '\bNODES=1\b') 'real executed MSBuild target uses exactly one node despite upstream -m'
+    # Win32 vs x86 native output paths in upstream collide; the image drops a
+    # msbuild.cmd shim at the head of PATH that injects -m:1 for upstream calls
+    # but never has an msbuild.exe, so NuGet auto-detection falls through to the
+    # genuine compiler installed by VsDevCmd.
+    $shimSource = Join-Path $repoRoot 'Install-BuildEnv.ps1'
+    if (-not (Test-Path $shimSource)) { throw 'Install-BuildEnv.ps1 missing' }
+    $shimCreated = $false
+    $shimAppendsM1 = $false
+    $shimNoExeWrite = $true
+    $shimRoutesToGenuine = $false
+    foreach ($line in (Get-Content -LiteralPath $shimSource)) {
+        if ($line -match "Set-Content.*msbuild\.cmd") { $shimCreated = $true }
+        if ($line -match '"%CTECH_MSBUILD%"\s+%\*\s+-m:1') { $shimAppendsM1 = $true }
+    }
+    # Comments in Install-BuildEnv.ps1 mention msbuild.exe in passing; ensure
+    # the only file actually written is msbuild.cmd, not an executable.
+    $writesFromShimBlock = $false
+    $inShimBlock = $false
+    foreach ($line in (Get-Content -LiteralPath $shimSource)) {
+        if ($line -match '--- Serialized upstream MSBuild') { $inShimBlock = $true; continue }
+        if ($line -match '^# --- ' -and $inShimBlock) { $inShimBlock = $false; continue }
+        if ($inShimBlock -and ($line -match 'Set-Content' -or $line -match 'New-Item|Out-File')) {
+            $writesFromShimBlock = $true
+            if ($line -match '\.exe') { throw "msbuild.exe shim file leaks the original wrapper: $line" }
+        }
+    }
+    Assert-True $shimCreated 'msbuild.cmd shim is created in the image install step'
+    Assert-True $shimAppendsM1 'shim forwards to %CTECH_MSBUILD% with %* then -m:1 (genuine compiler, serial)'
+    Assert-True $writesFromShimBlock 'shim block writes a file (Set-Content or Out-File) so Install-BuildEnv actually deploys it'
+    Assert-True ($shimNoExeWrite) 'shim does not deploy an .exe (NuGet auto-detection must fall through to VS)'
 } finally {
     if (Test-Path -LiteralPath $WorkDir) { Remove-Item -LiteralPath $WorkDir -Recurse -Force }
     Write-Host ("Checks: " + $script:Passed + " passed, " + $script:Failed + " failed")

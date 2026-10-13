@@ -14,11 +14,13 @@ $war=Join-Path $jenkinsHome 'jenkins.war'
 $version='2.580.1'
 $url="https://get.jenkins.io/war-stable/$version/jenkins.war"
 Invoke-WebRequest $url -OutFile $war
-$expected=(Invoke-WebRequest "$url.sha256").Content.Trim().Split(' ')[0]
+Invoke-WebRequest "$url.sha256" -OutFile "$war.sha256"
+$expected=(Get-Content "$war.sha256" -Raw).Trim().Split(' ')[0]
 if ((Get-FileHash $war -Algorithm SHA256).Hash -ne $expected) { throw 'Jenkins WAR checksum mismatch' }
 $manager=Join-Path $jenkinsHome 'jenkins-plugin-manager.jar'
 Invoke-WebRequest 'https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/2.15.0/jenkins-plugin-manager-2.15.0.jar' -OutFile $manager
-$managerSha=(Invoke-WebRequest 'https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/2.15.0/jenkins-plugin-manager-2.15.0.jar.sha256').Content.Trim().Split(' ')[0]
+Invoke-WebRequest 'https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/2.15.0/jenkins-plugin-manager-2.15.0.jar.sha256' -OutFile "$manager.sha256"
+$managerSha=(Get-Content "$manager.sha256" -Raw).Trim().Split(' ')[0]
 if ((Get-FileHash $manager -Algorithm SHA256).Hash -ne $managerSha) { throw 'Plugin manager checksum mismatch' }
 & java -jar $manager --war $war --plugin-download-directory (Join-Path $jenkinsHome 'plugins') --plugins pipeline-model-definition workflow-durable-task-step workflow-basic-steps workflow-job workflow-cps git credentials-binding
 if ($LASTEXITCODE -ne 0) { throw 'Jenkins pipeline plugin installation failed' }

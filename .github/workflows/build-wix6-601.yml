@@ -47,41 +47,110 @@ jobs:
             throw "Unexpected source tag"
           }
 
-      - name: Install compatible .NET 8 SDK and .NET 6 build/runtime dependencies
+      - name: Install exact historical .NET SDKs
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: |
-            8.0.x
-            6.0.x
+            8.0.410
+            6.0.428
+
+      - name: Clean preinstalled Visual Studio 2022 products
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer'
+          $cleanup = Join-Path $installer 'InstallCleanup.exe'
+          $vswhere = Join-Path $installer 'vswhere.exe'
+          if (-not (Test-Path $cleanup) -or -not (Test-Path $vswhere)) { throw 'Visual Studio cleanup/discovery tools missing' }
+          & $vswhere -all -products * -version '[17.0,18.0)' -property installationPath
+          $process = Start-Process $cleanup -ArgumentList @('-i','17') -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Visual Studio cleanup failed: $($process.ExitCode)" }
+          $remaining = @(& $vswhere -all -products * -version '[17.0,18.0)' -property installationPath | Where-Object { $_ })
+          if ($remaining.Count) { throw "Visual Studio 2022 registrations remain: $($remaining -join ', ')" }
+
+      - name: Install Visual Studio 2022 Enterprise 17.13.5
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $targetBuild = '17.13.35919.96'
+          $installPath = 'C:\CTech\VS2022Enterprise-17.13.5'
+          $bootstrapper = Join-Path $env:RUNNER_TEMP 'vs_enterprise_17.13.5.exe'
+          # Fixed Enterprise URL from Microsoft's official 17.13.5 release-history row.
+          $uri = 'https://download.visualstudio.microsoft.com/download/pr/ae26f186-44f0-4ea2-880c-4cf0acbab905/bb608c800282a315c1f60c3732d96954007b0217468f8a9eac7d618b171b3411/vs_Enterprise.exe'
+          Invoke-WebRequest -Uri $uri -OutFile $bootstrapper
+          if ((Get-Item $bootstrapper).VersionInfo.ProductVersion -notmatch '^17[.]13[.]5(?:[+.]|$)') { throw 'Unexpected historical Enterprise bootstrapper version' }
+          $arguments = @(
+            '--quiet', '--wait', '--norestart', '--nocache', '--installPath', $installPath,
+            '--add', 'Microsoft.VisualStudio.Workload.NativeDesktop',
+            '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+            '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
+            '--add', 'Microsoft.VisualStudio.Workload.ManagedDesktop',
+            '--includeRecommended'
+          )
+          $process = Start-Process $bootstrapper -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -notin @(0,3010)) { throw "Enterprise installation failed: $($process.ExitCode)" }
+          $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
+          & $vswhere -all -products * -format json
+          $instances = @(& $vswhere -products Microsoft.VisualStudio.Product.Enterprise -version '[17.13,17.14)' -property installationPath | Where-Object { $_ })
+          $builds = @(& $vswhere -products Microsoft.VisualStudio.Product.Enterprise -version '[17.13,17.14)' -property installationVersion | Where-Object { $_ })
+          if ($instances.Count -ne 1 -or $instances[0] -ne $installPath -or $builds.Count -ne 1 -or $builds[0] -ne $targetBuild) { throw "Pinned Enterprise registration/build mismatch: $($instances -join ', ') / $($builds -join ', ')" }
+          $vs = $instances[0]
+          Write-Host "Historical Enterprise build: $($builds[0])"
+          $toolsets = @(Get-ChildItem (Join-Path $vs 'VC\Tools\MSVC') -Directory)
+          foreach ($arch in @('x86','x64','arm64')) {
+            $compilers = @($toolsets | ForEach-Object { Join-Path $_.FullName "bin\Hostx64\$arch\cl.exe" } | Where-Object { Test-Path $_ })
+            if (-not $compilers.Count) { throw "Required MSVC compiler missing: $arch" }
+            Write-Host "Verified $arch compiler: $($compilers -join ', ')"
+          }
+          $legacyReference = Join-Path $vs 'Common7\IDE\PublicAssemblies\Microsoft.VisualStudio.QualityTools.UnitTestFramework.dll'
+          if (-not (Test-Path $legacyReference)) { throw 'Enterprise legacy MSTest reference missing' }
+          $identity = [Reflection.AssemblyName]::GetAssemblyName($legacyReference).FullName
+          if ($identity -ne 'Microsoft.VisualStudio.QualityTools.UnitTestFramework, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a') { throw "Unexpected legacy MSTest identity: $identity" }
+          Write-Host "Installed legacy MSTest identity: $identity"
+          Write-Host "Installed legacy MSTest SHA-256: $((Get-FileHash $legacyReference -Algorithm SHA256).Hash)"
+          $testInstances = @(& $vswhere -property installationPath -version '[17.0,18.0)' | Where-Object { $_ })
+          if ($testInstances.Count -ne 1 -or $testInstances[0] -ne $vs) { throw 'Exact upstream SDK-test discovery did not select pinned Enterprise' }
+          foreach ($relative in @('MSBuild\Current\Bin\MSBuild.exe','MSBuild\Current\Bin\amd64\MSBuild.exe','Common7\Tools\VsDevCmd.bat')) {
+            $path = Join-Path $vs $relative
+            if (-not (Test-Path $path)) { throw "Upstream tool missing: $path" }
+            Write-Host "Verified upstream tool: $path"
+          }
+          "CTECH_VSROOT=$vs" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CTECH_VSDEVCMD=$(Join-Path $vs 'Common7\Tools\VsDevCmd.bat')" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CTECH_MSBUILD=$(Join-Path $vs 'MSBuild\Current\Bin\amd64\MSBuild.exe')" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Report installed toolchains
         shell: pwsh
         run: |
           dotnet --list-sdks
           dotnet --list-runtimes
-          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationVersion
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -products Microsoft.VisualStudio.Product.Enterprise -version '[17.13,17.14)' -property installationVersion
+          & $env:CTECH_MSBUILD -version
 
-      - name: Install x86 .NET 6 runtime for Burn integration helper executables
+      - name: Install x86 .NET 6 Desktop runtime for Burn integration helpers
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $installDir = Join-Path $env:RUNNER_TEMP 'dotnet-x86'
           $installScript = Join-Path $env:RUNNER_TEMP 'dotnet-install.ps1'
 
-          # Burn integration fixtures invoke win-x86 .NET 6 apphosts.
+          # TestBA is win-x86 with UseWindowsForms=true; Core runtime alone is insufficient.
           # The GitHub runner supplies an x64 DOTNET_ROOT, which causes the
           # x86 apphost to load an incompatible hostfxr.dll (0x800700C1).
           Invoke-WebRequest -Uri 'https://dot.net/v1/dotnet-install.ps1' -OutFile $installScript
           # dotnet-install.ps1 is a PowerShell script; $LASTEXITCODE may be stale
           # from a previous native command. Validate the installed files below.
-          & $installScript -Channel '6.0' -Runtime dotnet -Architecture x86 -InstallDir $installDir -NoPath
+          & $installScript -Version '6.0.36' -Runtime dotnet -Architecture x86 -InstallDir $installDir -NoPath
+          & $installScript -Version '6.0.36' -Runtime windowsdesktop -Architecture x86 -InstallDir $installDir -NoPath
 
           $hostfxr = @(Get-ChildItem (Join-Path $installDir 'host\fxr') -Directory |
             Where-Object { $_.Name -match '^6[.]0[.]' })
           $runtime = @(Get-ChildItem (Join-Path $installDir 'shared\Microsoft.NETCore.App') -Directory |
             Where-Object { $_.Name -match '^6[.]0[.]' })
-          if (-not $hostfxr.Count -or -not $runtime.Count) {
-            throw 'Required x86 .NET 6 hostfxr and Microsoft.NETCore.App runtime were not installed'
+          $desktop = @(Get-ChildItem (Join-Path $installDir 'shared\Microsoft.WindowsDesktop.App') -Directory |
+            Where-Object { $_.Name -match '^6[.]0[.]' })
+          if (-not $hostfxr.Count -or -not $runtime.Count -or -not $desktop.Count) {
+            throw 'Required x86 .NET 6 hostfxr, Core and Desktop runtimes were not installed'
           }
           & (Join-Path $installDir 'dotnet.exe') --list-runtimes
           if ($LASTEXITCODE -ne 0) { throw 'x86 dotnet.exe runtime self-check failed' }
@@ -93,24 +162,22 @@ jobs:
           Write-Host "x86 .NET 6 runtime ready: $installDir"
           Write-Host "x64 .NET runtime remains unchanged: $x64Root"
 
-      - name: Select .NET 8 on the disposable Windows runner (no source edits)
+      - name: Pin .NET SDK visibility to the historical toolchain (no source edits)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $sdkRoot = Join-Path $env:ProgramFiles 'dotnet\sdk'
-          $sdk8 = @(Get-ChildItem $sdkRoot -Directory |
-            Where-Object { $_.Name -match '^8[.]0[.][0-9]+$' } |
-            Sort-Object { [version]$_.Name } -Descending |
-            Select-Object -First 1)
-          if (-not $sdk8.Count) { throw '.NET 8 SDK not installed' }
+          $requiredSdks = @('8.0.410', '6.0.428')
+          foreach ($required in $requiredSdks) {
+            if (-not (Test-Path (Join-Path $sdkRoot $required))) { throw "Historical SDK missing: $required" }
+          }
 
           # WiX 6 upstream-generated global.json has no pinned SDK version.
-          # An SDK 10 on the image requires MSBuild 18; VS2022 ships MSBuild 17.
-          # Hide only the incompatible SDKs on this disposable runner.
-          $disabledRoot = Join-Path $env:ProgramFiles 'dotnet\sdk-ctech-disabled'
+          # Keep only the selected historical SDKs visible on this disposable runner.
+          $disabledRoot = Join-Path $env:RUNNER_TEMP 'dotnet-sdk-ctech-disabled'
           New-Item -ItemType Directory -Path $disabledRoot -Force | Out-Null
           Get-ChildItem $sdkRoot -Directory |
-            Where-Object { [version]$_.Name -ge [version]'9.0.0' } |
+            Where-Object { $_.Name -notin $requiredSdks } |
             ForEach-Object {
               $destination = Join-Path $disabledRoot $_.Name
               Write-Host "Temporarily hiding incompatible SDK: $($_.Name)"
@@ -118,13 +185,11 @@ jobs:
             }
           Write-Host 'SDKs available to MSBuild:'
           dotnet --list-sdks
-          Write-Host "Using compatible .NET SDK: $($sdk8[0].Name)"
-
-          $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $vs = (& $vswhere -latest -products * -version '[17.0,18.0)' -property installationPath).Trim()
-          if (-not $vs) { throw 'VS2022 installation not found' }
-          $devCmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
-          $msbuild = Join-Path $vs 'MSBuild\Current\Bin\amd64\MSBuild.exe'
+          $selectedSdk = (dotnet --version).Trim()
+          if ($selectedSdk -ne '8.0.410') { throw "Expected SDK 8.0.410, found $selectedSdk" }
+          Write-Host "Selected .NET SDK: $selectedSdk"
+          $devCmd = $env:CTECH_VSDEVCMD
+          $msbuild = $env:CTECH_MSBUILD
           if (-not (Test-Path $devCmd)) { throw "VsDevCmd not found: $devCmd" }
           if (-not (Test-Path $msbuild)) { throw "MSBuild not found: $msbuild" }
 
@@ -143,6 +208,18 @@ jobs:
           Write-Host "Configured MSBuild response file options: $($msbuildOptions -join ' ')"
           "CTECH_VSDEVCMD=$devCmd" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host 'Only runner environment modified; no WiX source edits.'
+
+      - name: Configure upstream Installer logging policy on disposable runner
+        shell: cmd
+        run: |
+          reg add HKLM\Software\Policies\Microsoft\Windows\Installer /t REG_SZ /v Logging /d voicewarmupx /f
+          if errorlevel 1 exit /b 1
+          reg add HKLM\Software\WOW6432Node\Policies\Microsoft\Windows\Installer /t REG_SZ /v Logging /d voicewarmupx /f
+          if errorlevel 1 exit /b 1
+          reg query HKLM\Software\Policies\Microsoft\Windows\Installer /v Logging
+          if errorlevel 1 exit /b 1
+          reg query HKLM\Software\WOW6432Node\Policies\Microsoft\Windows\Installer /v Logging
+          exit /b %errorlevel%
 
       - name: Prepare CTech package version before build
         shell: pwsh
@@ -165,7 +242,7 @@ jobs:
             Write-Host "Patched: $($entry.Path)"
           }
           git diff --check
-          $changed = @((git diff --name-only) | Where-Object { $_ })
+          $changed = @((git diff HEAD --name-only) | Where-Object { $_ })
           $allowed = @(
             'src/internal/SetBuildNumber/SomeVerInfo.props.pp',
             'src/internal/SetBuildNumber/Directory.Packages.props.pp',
@@ -287,6 +364,8 @@ jobs:
           $artifacts = Join-Path $PWD 'build/artifacts'
           $scratch = Join-Path $env:RUNNER_TEMP 'ctech-symbol-packages'
           New-Item -ItemType Directory -Path $scratch -Force | Out-Null
+          $testedPackages = Join-Path $PWD 'build/logs/tested-packages'
+          New-Item -ItemType Directory -Path $testedPackages -Force | Out-Null
 
           # The WiX source contains both SDK-style assemblies and custom .nuspec
           # packages. NuGet raises NU5005 when IncludeSymbols is forced on
@@ -296,9 +375,7 @@ jobs:
           # Avoid rebuilding downstream .wixproj references with the managed
           # DebugType=portable property: WiX accepts only full/none for wixpdb.
           # Never pair a newly rebuilt PDB with an older nupkg binary.
-          $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $vs = (& $vswhere -latest -products * -version '[17.0,18.0)' -property installationPath).Trim()
-          $msbuild = Join-Path $vs 'MSBuild\Current\Bin\amd64\MSBuild.exe'
+          $msbuild = $env:CTECH_MSBUILD
           if (-not (Test-Path $msbuild)) { throw "MSBuild not found: $msbuild" }
 
           $packages = @(Get-ChildItem $artifacts -Filter '*.nupkg' -File)
@@ -362,7 +439,9 @@ jobs:
             $outDir = Join-Path $scratch $project.BaseName
             New-Item -ItemType Directory -Path $outDir -Force | Out-Null
             Write-Host "Rebuilding and packing Portable PDB symbols: $($project.BaseName)"
-            & $msbuild $project.FullName '-t:Rebuild;Pack' '-p:Configuration=Release' '-p:NoBuild=false' '-p:BuildProjectReferences=false' '-p:DebugType=portable' '-p:DebugSymbols=true' '-p:IncludeSymbols=true' '-p:SymbolPackageFormat=snupkg' "-p:PackageOutputPath=$outDir" '-nologo' '-v:minimal'
+            # Preserve the tested package bytes; DebugSymbols=true would change compiler mode.
+            Copy-Item (Join-Path $artifacts "$($project.BaseName).6.0.1.1.nupkg") -Destination $testedPackages
+            & $msbuild $project.FullName '-t:Rebuild;Pack' '-p:Configuration=Release' '-p:NoBuild=false' '-p:BuildProjectReferences=false' '-p:DebugType=portable' '-p:IncludeSymbols=true' '-p:SymbolPackageFormat=snupkg' "-p:PackageOutputPath=$outDir" '-nologo' '-v:minimal'
             $exitCode = $LASTEXITCODE
             if ($exitCode -ne 0) { throw "C# rebuild/Pack failed for $($project.FullName) with code $exitCode" }
 
@@ -493,7 +572,7 @@ jobs:
               })
               foreach ($dep in $deps) {
                 if ($dep.id -match '^(?i:WixToolset\.|WixInternal\.|wix$)' -and
-                    $dep.version -notmatch '6\.0\.2\.1') {
+                    $dep.version -notmatch '6\.0\.1\.1') {
                   throw "Unpatched WiX dependency: $id -> $($dep.id) $($dep.version)"
                 }
               }
@@ -511,6 +590,30 @@ jobs:
           $results | Sort-Object packageId | ConvertTo-Json -Depth 8 | Set-Content -Path "$dir/ctech-manifest.json" -Encoding utf8
           $results | Sort-Object packageId | Format-Table packageId,version,file -AutoSize
           Write-Host "Validated $($packages.Count) NuGet files."
+
+      - name: Verify upstream source changes after build
+        shell: pwsh
+        working-directory: wix-source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git diff HEAD --check
+          if ($LASTEXITCODE -ne 0) { throw 'Upstream source diff has whitespace errors' }
+          $allowed = @('src/internal/SetBuildNumber/SomeVerInfo.props.pp','src/internal/SetBuildNumber/Directory.Packages.props.pp','src/internal/SetBuildNumber/global.json.pp')
+          $changed = @(git diff HEAD --name-only | Where-Object { $_ })
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 3 -or @($changed | Where-Object { $_ -notin $allowed }).Count) { throw "Unexpected upstream source changes: $($changed -join ', ')" }
+          $templates = @(
+            @{ Path=$allowed[0]; Find='<PackageVersion>{major}.{minor}.{patch}{dashlabel}</PackageVersion>'; Replace='<PackageVersion>{major}.{minor}.{patch}.1</PackageVersion>' },
+            @{ Path=$allowed[1]; Find='Version="{packageversion}"'; Replace='Version="{packageversion}.1"' },
+            @{ Path=$allowed[2]; Find='"WixToolset.Sdk": "{packageversion}"'; Replace='"WixToolset.Sdk": "{packageversion}.1"' }
+          )
+          foreach ($entry in $templates) {
+            $original = (git show "HEAD:$($entry.Path)") -join "`n"
+            if ($LASTEXITCODE -ne 0 -or -not $original.Contains($entry.Find)) { throw "Version template baseline missing: $($entry.Path)" }
+            $actual = [IO.File]::ReadAllText((Join-Path $PWD $entry.Path)).Replace("`r`n", "`n").TrimEnd("`n")
+            if ($actual -cne $original.Replace($entry.Find,$entry.Replace).TrimEnd("`n")) { throw "Unexpected version template content: $($entry.Path)" }
+          }
+          git diff HEAD | Set-Content 'build/logs/upstream-source.diff' -Encoding utf8
+          Write-Host 'Verified: only the three permitted versioning templates changed.'
 
       - name: Upload NuGet packages
         uses: actions/upload-artifact@v4
@@ -531,4 +634,22 @@ jobs:
           name: wix6-ctech-6.0.1.1-additional-tools
           path: wix-source/build/artifacts/WixAdditionalTools.exe
           if-no-files-found: error
+          retention-days: 7
+
+      - name: Collect upstream runtime integration logs
+        if: always()
+        shell: cmd
+        working-directory: wix-source
+        run: |
+          if not exist build\logs mkdir build\logs
+          7z a "build\logs\test_burn_%GITHUB_RUN_ID%.zip" "%TEMP%\*.log" "%TEMP%\..\*.log"
+          exit /b %errorlevel%
+
+      - name: Upload build and test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wix6-ctech-6.0.1.1-build-logs
+          path: wix-source/build/logs/
+          if-no-files-found: warn
           retention-days: 7

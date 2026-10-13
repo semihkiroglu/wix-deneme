@@ -654,6 +654,25 @@ jobs:
           7z a "build\logs\test_burn_%GITHUB_RUN_ID%.zip" "%TEMP%\*.log" "%TEMP%\..\*.log"
           exit /b %errorlevel%
 
+      - name: Collect upstream MSTest platform diagnostics
+        if: always()
+        shell: pwsh
+        working-directory: wix-source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $PWD 'build'
+          $logs = Join-Path $build 'logs'
+          New-Item -ItemType Directory -Force -Path $logs | Out-Null
+          # MSTest.Sdk keeps detailed failures outside build/logs; collect without changing test execution.
+          $folders = @(Get-ChildItem $build -Recurse -Directory -Filter 'TestResults' | Where-Object { -not $_.FullName.StartsWith($logs + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) })
+          foreach ($folder in $folders) {
+            $relative = [IO.Path]::GetRelativePath($build, $folder.FullName)
+            $destination = Join-Path $logs "mtp-test-results/$relative"
+            New-Item -ItemType Directory -Force -Path $destination | Out-Null
+            Copy-Item (Join-Path $folder.FullName '*') -Destination $destination -Recurse -Force
+          }
+          Write-Host "Collected $($folders.Count) upstream MSTest diagnostic directories."
+
       - name: Upload build and test logs
         if: always()
         uses: actions/upload-artifact@v4

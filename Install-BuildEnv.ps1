@@ -29,8 +29,8 @@ $PwshUrl = 'https://github.com/PowerShell/PowerShell/releases/download/v7.6.6/Po
 $PwshVersion = '7.6.6'
 $MinGitUrl = 'https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.2/MinGit-2.53.0.2-64-bit.zip'
 $MinGitVersion = '2.53.0'
-$NuGetUrl = 'https://dist.nuget.org/win-x86-commandline/v6.14.0/nuget.exe'
-$NuGetVersion = '6.14.0'
+$NuGetUrl = 'https://dist.nuget.org/win-x86-commandline/v7.9.0/nuget.exe'
+$NuGetVersion = '7.9.0'
 
 # Legacy MSTest reference payload, Microsoft.VisualStudio.TestTools.TestPlatform.Legacy.Common
 # from the VS 17 release channel manifest (payload URL and sha256 as published in

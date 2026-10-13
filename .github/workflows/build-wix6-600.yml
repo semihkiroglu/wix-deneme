@@ -547,7 +547,7 @@ jobs:
             Write-Host "Rebuilding and packing Portable PDB symbols: $($project.BaseName)"
             # Preserve the tested package bytes for final IL/metadata/resource comparison.
             Copy-Item (Join-Path $artifacts "$($project.BaseName).6.0.0.1.nupkg") -Destination $testedPackages
-            & $msbuild $project.FullName '-t:Rebuild;Pack' '-p:Configuration=Release' '-p:NoBuild=false' '-p:BuildProjectReferences=false' '-p:DebugType=portable' '-p:DebugSymbols=true' '-p:IncludeSymbols=true' '-p:SymbolPackageFormat=snupkg' "-p:PackageOutputPath=$outDir" '-nologo' '-v:minimal'
+            & $msbuild $project.FullName '-t:Rebuild;Pack' '-p:Configuration=Release' '-p:NoBuild=false' '-p:BuildProjectReferences=false' '-p:DebugType=portable' '-p:IncludeSymbols=true' '-p:SymbolPackageFormat=snupkg' "-p:PackageOutputPath=$outDir" '-nologo' '-v:minimal'
             $exitCode = $LASTEXITCODE
             if ($exitCode -ne 0) { throw "C# rebuild/Pack failed for $($project.FullName) with code $exitCode" }
 

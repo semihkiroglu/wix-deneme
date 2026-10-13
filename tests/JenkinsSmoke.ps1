@@ -40,7 +40,7 @@ j.setAuthorizationStrategy(AuthorizationStrategy.UNSECURED)
 j.save()
 def job=j.createProject(WorkflowJob,'wix-docker')
 job.setDefinition(new CpsFlowDefinition(new File(System.getenv('WIX_SMOKE_JENKINSFILE')).getText('UTF-8'),true))
-job.addProperty(new ParametersDefinitionProperty(new BooleanParameterDefinition('PUBLISH',false)))
+job.addProperty(new ParametersDefinitionProperty(new BooleanParameterDefinition('PUBLISH',false,'Smoke test never publishes')))
 job.save()
 job.scheduleBuild2(0,new ParametersAction(new BooleanParameterValue('PUBLISH',false)))
 '@
@@ -53,6 +53,7 @@ $server=Start-Process 'java' -ArgumentList @('-Djenkins.install.runSetupWizard=f
 $base='http://127.0.0.1:8081'
 $build=$null
 $consoleOffset=0
+$startupDeadline=[DateTime]::UtcNow.AddMinutes(5)
 try {
     $deadline=[DateTime]::UtcNow.AddHours(4)
     while ([DateTime]::UtcNow -lt $deadline) {
@@ -62,6 +63,7 @@ try {
             $console=[string](Invoke-WebRequest "$base/job/wix-docker/1/consoleText" -TimeoutSec 15).Content
             if ($console.Length -gt $consoleOffset) { Write-Host $console.Substring($consoleOffset); $consoleOffset=$console.Length }
         } catch { }
+        if ($null -eq $build -and [DateTime]::UtcNow -gt $startupDeadline) { throw 'Jenkins job did not start; see jenkins-server-error.log' }
         if ($null -ne $build -and -not $build.building -and $build.result) { break }
         Start-Sleep -Seconds 15
     }

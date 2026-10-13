@@ -146,6 +146,16 @@ if ($selected.Count -ne 1 -or $selected[0] -ne $VsRoot) {
     throw "Launcher did not select the Build Tools instance: $($selected -join ', ')"
 }
 
+# --- Serialized upstream MSBuild (container-only) ---------------------------
+# The solution's Win32 and reference's x86 instances write the same native recipe.
+# Keep upstream commands intact and forward them to the genuine compiler with -m:1.
+$serialMsbuild = 'C:\tools\msbuild\MSBuild.exe'
+New-Item -ItemType Directory -Force (Split-Path -Parent $serialMsbuild) | Out-Null
+& $csc /nologo /target:exe "/out:$serialMsbuild" (Join-Path $PSScriptRoot 'MsbuildBootstrap.cs')
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $serialMsbuild)) { throw 'MSBuild launcher compilation failed' }
+& $serialMsbuild -version -nologo
+if ($LASTEXITCODE -ne 0) { throw 'Genuine MSBuild launcher preflight failed' }
+
 # --- Selected .NET SDKs and x86 runtimes ------------------------------------
 # The image contains only these SDKs, so unlike the disposable GitHub runner no
 # preinstalled SDK hiding or VS InstallCleanup is needed (nor possible).

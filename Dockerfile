@@ -3,7 +3,7 @@
 ARG BASE_IMAGE=mcr.microsoft.com/windows/server:ltsc2022
 FROM ${BASE_IMAGE}
 
-COPY Install-BuildEnv.ps1 VswhereBootstrap.cs Build-Wix.ps1 C:\pipeline\
+COPY Install-BuildEnv.ps1 VswhereBootstrap.cs MsbuildBootstrap.cs Build-Wix.ps1 C:\pipeline\
 
 ENV DOTNET_ROOT=C:\tools\dotnet `
     DOTNET_ROOT_X86=C:\tools\dotnet-x86 `

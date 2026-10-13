@@ -54,7 +54,7 @@ function Get-StubArguments([string]$StdOut) {
     return , $result
 }
 
-function Invoke-Child([string]$FilePath, [string]$Arguments, [string]$RealPath) {
+function Invoke-Child([string]$FilePath, [string]$Arguments, [string]$RealPath, [string]$RealVariable = 'CTECH_VSWHERE_REAL') {
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = $FilePath
     $startInfo.Arguments = $Arguments
@@ -62,7 +62,7 @@ function Invoke-Child([string]$FilePath, [string]$Arguments, [string]$RealPath) 
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
     $startInfo.WorkingDirectory = Split-Path -Parent $FilePath
-    if ($RealPath) { $startInfo.EnvironmentVariables['CTECH_VSWHERE_REAL'] = $RealPath }
+    if ($RealPath) { $startInfo.EnvironmentVariables[$RealVariable] = $RealPath }
     $process = [System.Diagnostics.Process]::Start($startInfo)
     $stdout = $process.StandardOutput.ReadToEnd()
     $stderr = $process.StandardError.ReadToEnd()
@@ -218,6 +218,27 @@ try {
     $run = Invoke-Child (Join-Path $emptyDir (Split-Path -Leaf $launcher)) '-property installationPath' $null
     Assert-True ($run.ExitCode -eq 127) 'missing real tool exits with 127'
     Assert-True ($run.StdErr -match 'vswhere-real') 'missing real tool is reported on stderr'
+
+    # The solution builds Win32 while project references build x86: both write
+    # the same recipe. Serialize the real MSBuild, retaining every other argument.
+    $msbuildSource = Join-Path $repoRoot 'MsbuildBootstrap.cs'
+    if (-not (Test-Path $msbuildSource)) { throw 'MSBuild serialization launcher missing' }
+    $msbuild = Build-Program $msbuildSource (Join-Path $WorkDir 'msbuild shim') 'MSBuild' 'MsbuildBootstrap.cs'
+    $run = Invoke-Child $msbuild '-m:8 -p:Path="C:\build dir\\" "" /nologo' $stub 'CTECH_MSBUILD'
+    Assert-ArgsEqual 'MSBuild retains quoted/empty arguments and overrides parallel nodes last' `
+        @('-m:8','-p:Path=C:\build dir\','', '/nologo','-m:1') (Get-StubArguments $run.StdOut)
+    Assert-True ($run.ExitCode -eq 42) 'MSBuild passes through failure exit code'
+    Assert-True ($run.StdOut -match 'STUB-STDOUT=ok' -and $run.StdErr -match 'STUB-STDERR=ok') 'MSBuild retains both diagnostic streams'
+    $run = Invoke-Child $msbuild '--stub-ok -m' $stub 'CTECH_MSBUILD'
+    Assert-True ($run.ExitCode -eq 0) 'MSBuild passes through success exit code'
+    $run = Invoke-Child $msbuild '-version' (Join-Path $WorkDir 'missing-msbuild') 'CTECH_MSBUILD'
+    Assert-True ($run.ExitCode -eq 127 -and $run.StdErr -match 'MSBuild') 'MSBuild fails closed when real compiler is missing'
+
+    # Exercise actual MSBuild option precedence, not just the stub argument list.
+    $probe = Join-Path $WorkDir 'node-count.proj'
+    [IO.File]::WriteAllText($probe, '<Project />')
+    $run = Invoke-Child $msbuild ('msbuild "' + $probe + '" -m:8 -nologo -getProperty:MSBuildNodeCount') (Get-Command dotnet).Source 'CTECH_MSBUILD'
+    Assert-True ($run.ExitCode -eq 0 -and $run.StdOut.Trim() -eq '1') 'real MSBuild scheduler uses exactly one node despite upstream -m'
 } finally {
     if (Test-Path -LiteralPath $WorkDir) { Remove-Item -LiteralPath $WorkDir -Recurse -Force }
     Write-Host ("Checks: " + $script:Passed + " passed, " + $script:Failed + " failed")

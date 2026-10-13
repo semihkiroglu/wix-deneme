@@ -27,6 +27,27 @@ try {
 } finally { Remove-Item $root -Recurse -Force }
 Write-Host 'PASS: stable 7+ tags, rejection boundaries, exact three version replacements and incompatible-template rejection'
 
+# Execute the harness's real staging loop and check its Docker COPY contract.
+& {
+    $Source=Split-Path $PSScriptRoot -Parent
+    $workspace=Join-Path ([IO.Path]::GetTempPath()) ('wix-staging-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force $workspace | Out-Null
+    try {
+        $tokens=$null; $errors=$null
+        $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'JenkinsSmoke.ps1'),[ref]$tokens,[ref]$errors)
+        $stages=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.ForEachStatementAst] -and $node.Variable.VariablePath.UserPath -eq 'file'},$true))
+        if ($errors.Count -or $stages.Count -ne 1) { throw 'Expected one valid harness staging loop' }
+        . ([scriptblock]::Create($stages[0].Extent.Text))
+        foreach ($line in Get-Content (Join-Path $Source 'Dockerfile') | Where-Object { $_ -match '^COPY ' }) {
+            $parts=$line -split '\s+'
+            foreach ($file in $parts[1..($parts.Count-2)]) {
+                if (-not (Test-Path (Join-Path $workspace $file))) { throw "Harness omits Docker COPY source: $file" }
+            }
+        }
+    } finally { Remove-Item $workspace -Recurse -Force }
+    Write-Host 'PASS: actual Jenkins staging supplies all Docker COPY sources'
+}
+
 # Exercise the actual smoke loop without starting Jenkins or downloading tooling.
 & {
     $tokens=$null; $errors=$null

@@ -7,7 +7,7 @@ $jenkinsHome=Join-Path $env:RUNNER_TEMP 'wix-jenkins-home'
 $workspace=Join-Path $jenkinsHome 'workspace/wix-docker'
 $init=Join-Path $jenkinsHome 'init.groovy.d'
 New-Item -ItemType Directory -Force $workspace,$init | Out-Null
-foreach ($file in @('Jenkinsfile','Dockerfile','.dockerignore','Install-BuildEnv.ps1','VswhereBootstrap.cs','Build-Wix.ps1','Publish-Wix.ps1')) {
+foreach ($file in @('Jenkinsfile','Dockerfile','.dockerignore','Install-BuildEnv.ps1','VswhereBootstrap.cs','MsbuildBootstrap.cs','Build-Wix.ps1','Publish-Wix.ps1')) {
     Copy-Item (Join-Path $Source $file) -Destination $workspace
 }
 $war=Join-Path $jenkinsHome 'jenkins.war'

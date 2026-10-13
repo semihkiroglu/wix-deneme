@@ -236,9 +236,13 @@ try {
 
     # Exercise actual MSBuild option precedence, not just the stub argument list.
     $probe = Join-Path $WorkDir 'node-count.proj'
-    [IO.File]::WriteAllText($probe, '<Project />')
-    $run = Invoke-Child $msbuild ('msbuild "' + $probe + '" -m:8 -nologo -getProperty:MSBuildNodeCount') (Get-Command dotnet).Source 'CTECH_MSBUILD'
-    Assert-True ($run.ExitCode -eq 0 -and $run.StdOut.Trim() -eq '1') 'real MSBuild scheduler uses exactly one node despite upstream -m'
+    [IO.File]::WriteAllText($probe, '<Project><Target Name="ReadNodes"><Message Text="NODES=$(MSBuildNodeCount)" Importance="high" /></Target></Project>')
+    $arguments='msbuild "' + $probe + '" -m:8 -nologo -t:ReadNodes -v:minimal'
+    $dotnet=(Get-Command dotnet).Source
+    $baseline=Invoke-Child $dotnet $arguments $null
+    Assert-True ($baseline.ExitCode -eq 0 -and $baseline.StdOut -match '\bNODES=8\b') 'negative control: real MSBuild without launcher retains eight scheduler nodes'
+    $run = Invoke-Child $msbuild $arguments $dotnet 'CTECH_MSBUILD'
+    Assert-True ($run.ExitCode -eq 0 -and $run.StdOut -match '\bNODES=1\b') 'real executed MSBuild target uses exactly one node despite upstream -m'
 } finally {
     if (Test-Path -LiteralPath $WorkDir) { Remove-Item -LiteralPath $WorkDir -Recurse -Force }
     Write-Host ("Checks: " + $script:Passed + " passed, " + $script:Failed + " failed")

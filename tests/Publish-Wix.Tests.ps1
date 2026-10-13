@@ -365,6 +365,11 @@ $script:MultiReleases = New-ReleasesJson @('v7.1.0', 'v7.0.1', 'v6.0.2', 'v7.0.0
 
 Write-Host ''
 Write-Host '== release tag selection =='
+$closed = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
+$closed.Start()
+$closedPort = $closed.LocalEndpoint.Port
+$closed.Stop()
+Assert-Throws { Send-FeedRequest -Method GET -Uri "http://127.0.0.1:$closedPort/" } 'failed:' 'transport failure throws its real cause rather than HTTP 0'
 $selection = @(Select-WixStableReleaseTags -Releases (ConvertFrom-Json (New-ReleasesJson @('v7.1.0', 'v7.0.1', 'v6.0.2', 'v7.0.0', 'v7.0.0-rc.2', 'v8.1.0', 'v8.0.0', 'v7.0.0.1'))) -MinVersion '7.0.0')
 $draft = @(ConvertFrom-Json (New-ReleasesJson @('v9.0.0')) | ForEach-Object { $_ })
 $draft[0].draft = $true
@@ -548,6 +553,19 @@ try {
 
 Assert-Equal 'http://feed/symbols/A.pdb/KEY1/A.pdb' (Get-SsqpPdbUri -BaseUrl 'http://feed/symbols/' -FileName 'A.pdb' -Key 'KEY1') 'SSQP URL builder joins base/name/key/name'
 Assert-Throws { Get-SsqpPdbUri -BaseUrl '' -FileName 'A.pdb' -Key 'KEY1' } 'ymbol' 'SSQP URL builder refuses an empty symbol server base (no invented URL)'
+
+$feed = Start-MockFeed -Options @{ ReleasesJson = $script:BasicReleases; Preload = @(
+  [pscustomobject]@{ relpath = 'wixtoolset.sdk/7.0.0.1/wixtoolset.sdk.7.0.0.1.nupkg'; source = $sdkNupkg },
+  [pscustomobject]@{ relpath = 'wix/7.0.0.1/wix.7.0.0.1.nupkg'; source = $cliNupkg }
+); Overrides = @([pscustomobject]@{ method = 'PUT'; path = '/custom/push/sym'; status = 500; times = 1 }) }
+try {
+  Assert-Throws { Publish-WixManifest -ManifestDir $goodDir -FeedUrl $feed.IndexUrl -ApiKey 'k' } '500' 'failed symbol push is a publication failure even when all nupkgs exist'
+  $decisions = @(Invoke-WixDiscovery -StateDir $goodDir -FeedUrl $feed.IndexUrl -GitHubApiBase $feed.BaseUrl)
+  Assert-Equal 'publish' ([string]$decisions[0].action) 'symbol-only failure is retried without rebuilding'
+  $null = Publish-WixManifest -ManifestDir $goodDir -FeedUrl $feed.IndexUrl -ApiKey 'k'
+  $decisions = @(Invoke-WixDiscovery -StateDir $goodDir -FeedUrl $feed.IndexUrl -GitHubApiBase $feed.BaseUrl)
+  Assert-Equal 'skip' ([string]$decisions[0].action) 'completed packages and symbols are skipped on the next discovery'
+} finally { Stop-MockFeed $feed }
 
 Write-Host ''
 Write-Host '== discovery =='

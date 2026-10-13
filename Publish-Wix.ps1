@@ -100,8 +100,7 @@ function Send-FeedRequest {
         $option = [System.Net.Http.HttpCompletionOption]::ResponseContentRead
         if ($HeadersOnly) { $option = [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead }
         try {
-            # .Result (not GetAwaiter) keeps Windows PowerShell 5.1 and PowerShell 7 both working.
-            $response = $client.SendAsync($request, $option).Result
+            $response = $client.SendAsync($request, $option).GetAwaiter().GetResult()
         } catch {
             $reason = $_.Exception
             if ($reason -is [System.AggregateException] -and $reason.InnerExceptions.Count -ge 1) { $reason = $reason.InnerExceptions[0] }
@@ -111,11 +110,11 @@ function Send-FeedRequest {
             $status = [int]$response.StatusCode
             $text = ''
             if ($OutFile -and $status -eq 200) {
-                $source = $response.Content.ReadAsStreamAsync().Result
+                $source = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
                 $target = [System.IO.File]::Create($OutFile)
                 try { $source.CopyTo($target) } finally { $target.Dispose(); $source.Dispose() }
             } elseif ($ReadText -and -not $HeadersOnly) {
-                $text = $response.Content.ReadAsStringAsync().Result
+                $text = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
             }
             return [pscustomobject]@{ Status = $status; Text = $text }
         } finally { $response.Dispose() }
@@ -274,6 +273,8 @@ function Get-SsqpPdbUri {
 function Publish-WixManifest {
     param([string]$ManifestDir, [string]$FeedUrl, [string]$ApiKey = '', $Auth, [string]$SymbolServerUrl = '', [string]$WorkDir = '')
     $manifest = Assert-WixManifest -ManifestDir $ManifestDir
+    $receipt = Join-Path $manifest.Dir 'publish-complete.json'
+    if (Test-Path -LiteralPath $receipt) { Remove-Item -LiteralPath $receipt -Force }
     $endpoints = Get-FeedResources -FeedUrl $FeedUrl -Auth $Auth
     if (-not $WorkDir) { $WorkDir = [System.IO.Path]::GetTempPath() }
     $symbolServer = Get-Trimmed $SymbolServerUrl
@@ -317,6 +318,8 @@ function Publish-WixManifest {
         $summary += [pscustomobject]@{ id = $package.Id; version = $package.Version; package = $packageStatus; symbols = $symbolStatus }
         Write-Host ("published {0} {1}: package={2} symbols={3}" -f $package.Id, $package.Version, $packageStatus, $symbolStatus)
     }
+    $complete = @{ feed = $FeedUrl; manifest_sha256 = Get-Sha256Hex (Join-Path $manifest.Dir 'release-manifest.json') }
+    [IO.File]::WriteAllText($receipt, (ConvertTo-Json $complete), [Text.UTF8Encoding]::new($false))
     return $summary
 }
 
@@ -409,8 +412,17 @@ function Invoke-WixDiscovery {
                         $action = 'publish'
                         $reason = 'missing on feed: ' + ($missing -join ', ')
                     } else {
-                        $action = 'skip'
-                        $reason = 'fully published'
+                        $complete = $null
+                        try { $complete = ConvertFrom-Json ([IO.File]::ReadAllText((Join-Path $dir 'publish-complete.json'))) } catch { }
+                        # shortcut: the feed has no standard snupkg lookup; use the successful publish receipt.
+                        if (@($public | Where-Object { $_.symbols }).Count -gt 0 -and
+                            ($null -eq $complete -or $complete.feed -ne $FeedUrl -or $complete.manifest_sha256 -ne (Get-Sha256Hex $manifestPath))) {
+                            $action = 'publish'
+                            $reason = 'symbol publication not confirmed'
+                        } else {
+                            $action = 'skip'
+                            $reason = 'fully published'
+                        }
                     }
                 }
             }

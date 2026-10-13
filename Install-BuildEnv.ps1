@@ -55,6 +55,22 @@ function Get-Sha256([string]$Path) {
 
 New-Item -ItemType Directory -Force -Path $DownloadRoot | Out-Null
 
+# Upstream DTF still targets net20; install the genuine CLR 2/3.5 Windows feature.
+if ([Environment]::OSVersion.Version.Build -ge 20348) {
+    & dism.exe /Online /Add-Capability /CapabilityName:NetFx3 /NoRestart
+    $featureExit = $LASTEXITCODE
+} else {
+    & sc.exe config wuauserv start= auto
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot enable container Windows Update for NetFx3' }
+    try {
+        & dism.exe /Online /Enable-Feature /FeatureName:NetFx3 /All /NoRestart
+        $featureExit = $LASTEXITCODE
+    } finally { & sc.exe config wuauserv start= disabled }
+}
+if ($featureExit -notin @(0,3010) -or -not (Test-Path "$env:WINDIR\Microsoft.NET\Framework\v2.0.50727\mscorlib.dll")) {
+    throw "NET Framework 3.5 installation failed: $featureExit"
+}
+
 # --- Visual Studio Build Tools 17.14.29 -------------------------------------
 $bootstrapper = Join-Path $DownloadRoot 'vs_BuildTools_17.14.29.exe'
 Get-PinnedFile $VsBootstrapperUrl $bootstrapper

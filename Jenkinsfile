@@ -88,10 +88,10 @@ if ($LASTEXITCODE -ne 0 -or $info.OSType -ne 'windows') { throw 'Windows Docker 
 $kernel = [regex]::Match($info.KernelVersion, '(?:^|[^0-9])10[.]0[. ]+([0-9]+)')
 if (-not $kernel.Success) { throw "Unknown Docker kernel version: $($info.KernelVersion)" }
 $build = [int]$kernel.Groups[1].Value
-if ($build -eq 17763) { $base = 'mcr.microsoft.com/dotnet/framework/runtime:4.8-windowsservercore-ltsc2019' }
-elseif ($build -ge 26100) { $base = 'mcr.microsoft.com/dotnet/framework/runtime:4.8.1-windowsservercore-ltsc2025' }
-elseif ($build -ge 20348) { $base = 'mcr.microsoft.com/dotnet/framework/runtime:4.8.1-windowsservercore-ltsc2022' }
-else { throw "No .NET Framework container base image for Windows build $build" }
+if ($build -eq 17763) { $base = 'mcr.microsoft.com/windows:1809' }
+elseif ($build -ge 26100) { $base = 'mcr.microsoft.com/windows/server:ltsc2025' }
+elseif ($build -ge 20348) { $base = 'mcr.microsoft.com/windows/server:ltsc2022' }
+else { throw "No supported Windows container base image for Windows build $build" }
 $outDir = Join-Path $ws ('artifacts\\' + $tag)
 $logDir = Join-Path $ws 'logs'
 New-Item -ItemType Directory -Force -Path $outDir, $logDir | Out-Null

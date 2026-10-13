@@ -1,4 +1,4 @@
-# Installs the pinned build environment in the disposable Windows Server Core container.
+# Installs the pinned build environment in the disposable Windows container.
 # Runs under Windows PowerShell 5.1 (the only shell in the base image).
 # Every download below is an official Microsoft / PowerShell / git-for-windows /
 # NuGet source; versions are fixed so image rebuilds stay reproducible.
@@ -54,6 +54,13 @@ function Get-Sha256([string]$Path) {
 }
 
 New-Item -ItemType Directory -Force -Path $DownloadRoot | Out-Null
+
+# Burn tests require the real OS binary and initialized shell folders, not placeholders.
+if (-not (Test-Path "$env:WINDIR\System32\consent.exe")) { throw 'Windows container base lacks consent.exe required by upstream Burn tests' }
+foreach ($folder in @('Startup', 'MyPictures', 'Templates')) {
+    $path = [Environment]::GetFolderPath([Environment+SpecialFolder]$folder, [Environment+SpecialFolderOption]::Create)
+    if (-not $path -or -not (Test-Path $path)) { throw "Container profile folder unavailable: $folder" }
+}
 
 # Upstream DTF still targets net20; install the genuine CLR 2/3.5 Windows feature.
 if ([Environment]::OSVersion.Version.Build -ge 20348) {

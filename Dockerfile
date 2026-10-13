@@ -1,6 +1,6 @@
 # escape=`
 # Install the pinned toolchain at container startup, avoiding heavy VS layer export failures.
-ARG BASE_IMAGE=mcr.microsoft.com/dotnet/framework/runtime:4.8.1-windowsservercore-ltsc2022
+ARG BASE_IMAGE=mcr.microsoft.com/windows/server:ltsc2022
 FROM ${BASE_IMAGE}
 
 COPY Install-BuildEnv.ps1 VswhereBootstrap.cs Build-Wix.ps1 C:\pipeline\

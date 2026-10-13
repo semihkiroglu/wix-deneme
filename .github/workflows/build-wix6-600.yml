@@ -223,27 +223,31 @@ jobs:
           & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -products Microsoft.VisualStudio.Product.Enterprise -version '[17.13,17.14)' -property installationVersion
           & "$env:CTECH_MSBUILD" -version
 
-      - name: Install x86 .NET 6 runtime for Burn integration helper executables
+      - name: Install x86 .NET 6 Desktop runtime for Burn integration helpers
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $installDir = Join-Path $env:RUNNER_TEMP 'dotnet-x86'
           $installScript = Join-Path $env:RUNNER_TEMP 'dotnet-install.ps1'
 
-          # Burn integration fixtures invoke win-x86 .NET 6 apphosts.
+          # TestBA is win-x86 with UseWindowsForms=true; Core runtime alone is insufficient.
           # The GitHub runner supplies an x64 DOTNET_ROOT, which causes the
           # x86 apphost to load an incompatible hostfxr.dll (0x800700C1).
           Invoke-WebRequest -Uri 'https://dot.net/v1/dotnet-install.ps1' -OutFile $installScript
           # dotnet-install.ps1 is a PowerShell script; $LASTEXITCODE may be stale
           # from a previous native command. Validate the installed files below.
-          & $installScript -Channel '6.0' -Runtime dotnet -Architecture x86 -InstallDir $installDir -NoPath
+          # Microsoft's Desktop ZIP contains no hostfxr/Core runtime; install both in the same x86 root.
+          & $installScript -Version '6.0.36' -Runtime dotnet -Architecture x86 -InstallDir $installDir -NoPath
+          & $installScript -Version '6.0.36' -Runtime windowsdesktop -Architecture x86 -InstallDir $installDir -NoPath
 
           $hostfxr = @(Get-ChildItem (Join-Path $installDir 'host\fxr') -Directory |
             Where-Object { $_.Name -match '^6[.]0[.]' })
           $runtime = @(Get-ChildItem (Join-Path $installDir 'shared\Microsoft.NETCore.App') -Directory |
             Where-Object { $_.Name -match '^6[.]0[.]' })
-          if (-not $hostfxr.Count -or -not $runtime.Count) {
-            throw 'Required x86 .NET 6 hostfxr and Microsoft.NETCore.App runtime were not installed'
+          $desktop = @(Get-ChildItem (Join-Path $installDir 'shared\Microsoft.WindowsDesktop.App') -Directory |
+            Where-Object { $_.Name -match '^6[.]0[.]' })
+          if (-not $hostfxr.Count -or -not $runtime.Count -or -not $desktop.Count) {
+            throw 'Required x86 .NET 6 hostfxr, Core and Desktop runtimes were not installed'
           }
           & (Join-Path $installDir 'dotnet.exe') --list-runtimes
           if ($LASTEXITCODE -ne 0) { throw 'x86 dotnet.exe runtime self-check failed' }
@@ -252,7 +256,7 @@ jobs:
           "DOTNET_ROOT_X86=$installDir" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           $x64Root = Join-Path $env:ProgramFiles 'dotnet'
           "DOTNET_ROOT_X64=$x64Root" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "x86 .NET 6 runtime ready: $installDir"
+          Write-Host "x86 .NET 6 Core + Desktop runtime ready: $installDir"
           Write-Host "x64 .NET runtime remains unchanged: $x64Root"
 
       - name: Pin .NET SDK visibility to the historical toolchain (no source edits)
@@ -311,6 +315,18 @@ jobs:
           Write-Host "Configured MSBuild response file options: $($msbuildOptions -join ' ')"
           Write-Host 'Only runner environment modified; no WiX source edits.'
 
+      - name: Configure upstream Installer logging policy on disposable runner
+        shell: cmd
+        run: |
+          reg add HKLM\Software\Policies\Microsoft\Windows\Installer /t REG_SZ /v Logging /d voicewarmupx /f
+          if errorlevel 1 exit /b 1
+          reg add HKLM\Software\WOW6432Node\Policies\Microsoft\Windows\Installer /t REG_SZ /v Logging /d voicewarmupx /f
+          if errorlevel 1 exit /b 1
+          reg query HKLM\Software\Policies\Microsoft\Windows\Installer /v Logging
+          if errorlevel 1 exit /b 1
+          reg query HKLM\Software\WOW6432Node\Policies\Microsoft\Windows\Installer /v Logging
+          exit /b %errorlevel%
+
       - name: Prepare CTech package version before build
         shell: pwsh
         working-directory: wix-source
@@ -332,7 +348,7 @@ jobs:
             Write-Host "Patched: $($entry.Path)"
           }
           git diff --check
-          $changed = @((git diff --name-only) | Where-Object { $_ })
+          $changed = @((git diff HEAD --name-only) | Where-Object { $_ })
           $allowed = @(
             'src/internal/SetBuildNumber/SomeVerInfo.props.pp',
             'src/internal/SetBuildNumber/Directory.Packages.props.pp',
@@ -454,6 +470,8 @@ jobs:
           $artifacts = Join-Path $PWD 'build/artifacts'
           $scratch = Join-Path $env:RUNNER_TEMP 'ctech-symbol-packages'
           New-Item -ItemType Directory -Path $scratch -Force | Out-Null
+          $testedPackages = Join-Path $PWD 'build/logs/tested-packages'
+          New-Item -ItemType Directory -Path $testedPackages -Force | Out-Null
 
           # The WiX source contains both SDK-style assemblies and custom .nuspec
           # packages. NuGet raises NU5005 when IncludeSymbols is forced on
@@ -527,6 +545,8 @@ jobs:
             $outDir = Join-Path $scratch $project.BaseName
             New-Item -ItemType Directory -Path $outDir -Force | Out-Null
             Write-Host "Rebuilding and packing Portable PDB symbols: $($project.BaseName)"
+            # Preserve the tested package bytes for final IL/metadata/resource comparison.
+            Copy-Item (Join-Path $artifacts "$($project.BaseName).6.0.0.1.nupkg") -Destination $testedPackages
             & $msbuild $project.FullName '-t:Rebuild;Pack' '-p:Configuration=Release' '-p:NoBuild=false' '-p:BuildProjectReferences=false' '-p:DebugType=portable' '-p:DebugSymbols=true' '-p:IncludeSymbols=true' '-p:SymbolPackageFormat=snupkg' "-p:PackageOutputPath=$outDir" '-nologo' '-v:minimal'
             $exitCode = $LASTEXITCODE
             if ($exitCode -ne 0) { throw "C# rebuild/Pack failed for $($project.FullName) with code $exitCode" }
@@ -689,12 +709,24 @@ jobs:
             'src/internal/SetBuildNumber/Directory.Packages.props.pp',
             'src/internal/SetBuildNumber/global.json.pp'
           )
-          $changed = @(git diff --name-only | Where-Object { $_ })
+          $changed = @(git diff HEAD --name-only | Where-Object { $_ })
           if ($LASTEXITCODE -ne 0) { throw 'Could not inspect upstream source changes' }
           $unexpected = @($changed | Where-Object { $_ -notin $allowed })
           if ($unexpected.Count -or $changed.Count -ne 3) {
             throw "Unexpected upstream source changes after build: $($changed -join ', ')"
           }
+          $templates = @(
+            @{ Path = $allowed[0]; Find = '<PackageVersion>{major}.{minor}.{patch}{dashlabel}</PackageVersion>'; Replace = '<PackageVersion>{major}.{minor}.{patch}.1</PackageVersion>' },
+            @{ Path = $allowed[1]; Find = 'Version="{packageversion}"'; Replace = 'Version="{packageversion}.1"' },
+            @{ Path = $allowed[2]; Find = '"WixToolset.Sdk": "{packageversion}"'; Replace = '"WixToolset.Sdk": "{packageversion}.1"' }
+          )
+          foreach ($entry in $templates) {
+            $original = (git show "HEAD:$($entry.Path)") -join "`n"
+            if ($LASTEXITCODE -ne 0 -or -not $original.Contains($entry.Find)) { throw "Could not read exact version template baseline: $($entry.Path)" }
+            $actual = [IO.File]::ReadAllText((Join-Path $PWD $entry.Path)).Replace("`r`n", "`n").TrimEnd("`n")
+            if ($actual -cne $original.Replace($entry.Find, $entry.Replace).TrimEnd("`n")) { throw "Unexpected version template content: $($entry.Path)" }
+          }
+          git diff HEAD | Set-Content 'build/logs/upstream-source.diff' -Encoding utf8
           Write-Host 'Verified: only the three permitted versioning templates changed.'
 
       - name: Upload NuGet packages
@@ -717,6 +749,15 @@ jobs:
           path: wix-source/build/artifacts/WixAdditionalTools.exe
           if-no-files-found: error
           retention-days: 7
+
+      - name: Collect upstream runtime integration logs
+        if: always()
+        shell: cmd
+        working-directory: wix-source
+        run: |
+          if not exist build\logs mkdir build\logs
+          7z a "build\logs\test_burn_%GITHUB_RUN_ID%.zip" "%TEMP%\*.log" "%TEMP%\..\*.log"
+          exit /b %errorlevel%
 
       - name: Upload build and test logs
         if: always()

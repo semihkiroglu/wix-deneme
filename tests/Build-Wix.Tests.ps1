@@ -128,6 +128,8 @@ if (-not $build.Contains('$ExpectedUpstreamCommits')) { throw 'Build-Wix must pi
 if (-not $build.Contains('b8977d6f88e7b68e000bac226a2814f236770570')) { throw 'The v7.0.0 upstream commit pin is missing from Build-Wix' }
 if (-not $build.Contains('Get-FileHash $symbol')) { throw 'Manifest symbol packages need their own hash for publication verification' }
 if (-not $build.Contains('$ExpectedTestCounts')) { throw 'Build-Wix must pin the exact expected E2E result counts per release' }
+if (-not $build.Contains('(measured: ')) { throw 'Build-Wix must report measured result counts when failing an unpinned release' }
+if ($build.Contains('No pinned test result counts')) { throw 'An unpinned release must be measured after the tests, not rejected before them' }
 if (-not $build.Contains('WixE2E failures are not container-limited')) { throw 'Build-Wix must validate the WixE2E tail TRX after the container-limited stage' }
 
 function New-TestTrx([string]$Path, [string]$Counters, [string]$Results, [string]$Outcome = 'Failed') {
@@ -152,6 +154,8 @@ try {
     $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 40 @('Failed') | Out-Null } catch { $rejected=$_.Exception.Message -match 'exactly' }
     if (-not $rejected) { throw 'TRX whose result count differs from the pinned count was accepted' }
     New-TestTrx $trx 'total="3" executed="2" passed="1" failed="1" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Failed" /><UnitTestResult testName="A.C" outcome="Passed" /><UnitTestResult testName="A.D" outcome="NotExecuted" />' 'Failed'
+    $measured=@(Assert-TrxConsistent (Get-TrxState $trx) $trx -1 @('Failed'))
+    if ($measured.Count -ne 1) { throw 'An unpinned TRX measurement must return the failures without the exact-count check' }
     $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 3 @('Completed') | Out-Null } catch { $rejected=$_.Exception.Message -match 'summary outcome' }
     if (-not $rejected) { throw 'TRX with an unexpected summary outcome was accepted' }
 } finally { Remove-Item $trx -Force }

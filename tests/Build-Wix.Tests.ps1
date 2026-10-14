@@ -100,3 +100,9 @@ $build=(Get-Content $script -Raw)
 if (-not $build.Contains("'8dot3name','set','C:','0'")) { throw 'Build-Wix must enable 8.3 short names for the upstream long-path MSI test' }
 if ($build -notmatch 'wix-8dot3-probe') { throw 'Build-Wix must fail fast when the container cannot create 8.3 short names' }
 Write-Host 'PASS: the container enables the 8.3 short names the upstream long-path MSI test relies on'
+
+# The upstream ComPlusExtensionTests native test component is an ATL project (atlbase.h); the Build Tools install must include and verify it.
+$envScript=(Get-Content (Join-Path $PSScriptRoot '../Install-BuildEnv.ps1') -Raw)
+if (-not $envScript.Contains('Microsoft.VisualStudio.Component.VC.ATL')) { throw 'Install-BuildEnv must install the ATL component required by the upstream ComPlus native test component' }
+if (-not ($envScript.Contains('atlmfc') -and $envScript.Contains('atlbase.h'))) { throw 'Install-BuildEnv must verify the installed ATL headers' }
+Write-Host 'PASS: the environment installs and verifies ATL for the upstream native test component'

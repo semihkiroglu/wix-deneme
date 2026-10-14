@@ -93,6 +93,7 @@ $vsArguments = @(
     '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
     '--add', 'Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools',
     '--add', 'Microsoft.VisualStudio.Component.TestTools.BuildTools',
+    '--add', 'Microsoft.VisualStudio.Component.VC.ATL',
     '--includeRecommended'
 )
 $process = Start-Process -FilePath $bootstrapper -ArgumentList $vsArguments -Wait -PassThru
@@ -125,6 +126,9 @@ foreach ($arch in @('x86', 'x64', 'arm64')) {
     $found = @($toolsets | ForEach-Object { Join-Path $_.FullName "bin\Hostx64\$arch\cl.exe" } | Where-Object { Test-Path -LiteralPath $_ })
     if (-not $found.Count) { throw "MSVC compiler missing for $arch" }
 }
+# Upstream ComPlusExtensionTests builds an ATL native test component (atlbase.h); the toolchain must provide the ATL headers.
+$atl = @($toolsets | ForEach-Object { Join-Path $_.FullName 'atlmfc\include\atlbase.h' } | Where-Object { Test-Path -LiteralPath $_ })
+if (-not $atl.Count) { throw 'ATL headers missing; the upstream ComPlusExtensionTests native component requires atlbase.h' }
 
 # --- VS compiler environment select -----------------------------------------
 # VS Build Tools default vswhere filter doesn't list Build Tools as an

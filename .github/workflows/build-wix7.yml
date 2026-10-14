@@ -56,6 +56,10 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $info.OSType -ne 'windows') { throw 'Windows Docker engine required' }
           Get-CimInstance Win32_OperatingSystem | Select-Object Caption,BuildNumber
           Get-PSDrive -PSProvider FileSystem | Select-Object Name,Used,Free
+      - name: Probe MSI database creation at long paths inside the container
+        if: ${{ inputs.test_only }}
+        shell: pwsh
+        run: ./tests/MsiLongPathProbe.ps1
       - name: Probe upstream native process capture with real and wrapped vswhere
         shell: pwsh
         run: ./tests/NativeCaptureProbe.ps1

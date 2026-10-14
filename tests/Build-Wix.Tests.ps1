@@ -106,3 +106,13 @@ $envScript=(Get-Content (Join-Path $PSScriptRoot '../Install-BuildEnv.ps1') -Raw
 if (-not $envScript.Contains('Microsoft.VisualStudio.Component.VC.ATL')) { throw 'Install-BuildEnv must install the ATL component required by the upstream ComPlus native test component' }
 if (-not ($envScript.Contains('atlmfc') -and $envScript.Contains('atlbase.h'))) { throw 'Install-BuildEnv must verify the installed ATL headers' }
 Write-Host 'PASS: the environment installs and verifies ATL for the upstream native test component'
+
+# The container-limited MsiE2E allowlist and its TRX verification (see docs/container-test-notes.md).
+if (-not $build.Contains('$AllowedContainerFailures')) { throw 'Build-Wix must carry the verified container-limited failure list' }
+if (-not $build.Contains('WixToolsetTest.MsiE2E.trx')) { throw 'Build-Wix must check the MsiE2E results against the allowlist' }
+if (-not (Test-Path (Join-Path $PSScriptRoot '../docs/container-test-notes.md'))) { throw 'Container test limitation notes missing' }
+$trx=Join-Path ([IO.Path]::GetTempPath()) ('wix-allowlist-' + [Guid]::NewGuid().ToString('N') + '.trx')
+[IO.File]::WriteAllText($trx,'<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><Results><UnitTestResult testName="A.B" outcome="Failed" /><UnitTestResult testName="A.C" outcome="Passed" /><UnitTestResult testName="A.D" outcome="NotExecuted" /></Results></TestRun>')
+try { $failed=@(Get-TrxFailedTests $trx) } finally { Remove-Item $trx -Force }
+if ($failed.Count -ne 1 -or $failed[0] -ne 'A.B') { throw 'TRX failed-test extraction is wrong' }
+Write-Host 'PASS: container-limited MsiE2E allowlist, TRX verification and limitation notes are in place'

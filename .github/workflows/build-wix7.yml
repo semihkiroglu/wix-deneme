@@ -60,6 +60,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: jenkins-wix7-smoke-${{ github.run_id }}
-          path: ${{ runner.temp }}/jenkins-evidence/
+          path: |
+            ${{ runner.temp }}/jenkins-evidence/
+            ${{ runner.temp }}/wix-jenkins-home/workspace/wix-docker/artifacts/v7.0.0/logs/
           if-no-files-found: error
           retention-days: 7

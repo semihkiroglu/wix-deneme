@@ -61,6 +61,8 @@ Write-Host 'PASS: stable 7+ tags, rejection boundaries, exact three version repl
     $deadline=[DateTime]::UtcNow.AddMinutes(1)
     $startupDeadline=[DateTime]::UtcNow.AddMinutes(-1)
     $build=$null; $consoleOffset=0; $script:polls=0
+    $Evidence=Join-Path ([IO.Path]::GetTempPath()) ('wix-live-console-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force $Evidence | Out-Null
     function Invoke-RestMethod {
         param($Uri,$TimeoutSec)
         $script:polls++
@@ -71,9 +73,18 @@ Write-Host 'PASS: stable 7+ tags, rejection boundaries, exact three version repl
     function Start-Sleep { param($Seconds) }
     . $poll 3>$null
     if ($script:polls -ne 3 -or $build.result -ne 'SUCCESS') { throw 'Smoke loop did not recover from a temporary status failure' }
+    $liveConsole=Join-Path $Evidence 'jenkins-build.log'
+    if (-not (Test-Path $liveConsole) -or [IO.File]::ReadAllText($liveConsole) -ne 'running') { throw 'Live Jenkins console was not persisted before build completion' }
+    Remove-Item $Evidence -Recurse -Force
     function Invoke-RestMethod { param($Uri,$TimeoutSec) throw 'Expected unavailable Jenkins job' }
     $build=$null; $rejected=$false
     try { . $poll 3>$null } catch { $rejected=$_.Exception.Message -match 'Jenkins job did not start' }
     if (-not $rejected) { throw 'Smoke loop lost its hard startup deadline' }
     Write-Host 'PASS: Jenkins status recovery after startup and hard initial startup deadline'
 }
+
+$docker=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '../Dockerfile'))
+foreach ($setting in @('TESTINGPLATFORM_DIAGNOSTIC=1','TESTINGPLATFORM_DIAGNOSTIC_VERBOSITY=Trace','TESTINGPLATFORM_DIAGNOSTIC_OUTPUT_DIRECTORY=C:\output\logs\testdiagnostics')) {
+    if (-not $docker.Contains($setting)) { throw "Test diagnostics would be lost inside the build container: $setting" }
+}
+Write-Host 'PASS: test diagnostics write into the mounted artifact output'

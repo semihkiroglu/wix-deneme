@@ -56,11 +56,25 @@ $consoleOffset=0
 $startupDeadline=[DateTime]::UtcNow.AddMinutes(5)
 try {
     $deadline=[DateTime]::UtcNow.AddHours(4)
+    $nextSnapshot=[DateTime]::MinValue
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($server.HasExited) { throw "Jenkins exited with code $($server.ExitCode)" }
+        if ($env:WIX_SMOKE_JENKINSFILE -and [DateTime]::UtcNow -ge $nextSnapshot) {
+            try {
+                $stamp=[DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
+                Get-CimInstance Win32_LogicalDisk -OperationTimeoutSec 5 | Select-Object DeviceID,Size,FreeSpace | ConvertTo-Json | Set-Content (Join-Path $Evidence "host-disk-$stamp.json")
+                # This exact name belongs to the one temporary Jenkins job, not another host workload.
+                $diagnostic='Get-CimInstance Win32_Process -OperationTimeoutSec 5 | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Depth 3'
+                $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($diagnostic))
+                $snapshot=Start-Process docker -ArgumentList @('exec','wix-jenkins-wix-docker-1-v7.0.0','powershell','-NoProfile','-EncodedCommand',$encoded) -PassThru -RedirectStandardOutput (Join-Path $Evidence "container-processes-$stamp.json") -RedirectStandardError (Join-Path $Evidence "container-processes-$stamp.err.log")
+                if (-not $snapshot.WaitForExit(15000)) { Stop-Process -Id $snapshot.Id -Force; Write-Warning 'Container diagnostic client timed out' }
+            } catch { Write-Warning "Diagnostic snapshot unavailable: $($_.Exception.Message)" }
+            $nextSnapshot=[DateTime]::UtcNow.AddMinutes(1)
+        }
         try { $build=Invoke-RestMethod "$base/job/wix-docker/1/api/json" -TimeoutSec 15 } catch { Write-Warning "Jenkins status request failed; keeping last state: $($_.Exception.Message)" }
         try {
             $console=[string](Invoke-WebRequest "$base/job/wix-docker/1/consoleText" -TimeoutSec 15).Content
+            [IO.File]::WriteAllText((Join-Path $Evidence 'jenkins-build.log'), $console)
             if ($console.Length -gt $consoleOffset) { Write-Host $console.Substring($consoleOffset); $consoleOffset=$console.Length }
         } catch { }
         if ($null -eq $build -and [DateTime]::UtcNow -gt $startupDeadline) { throw 'Jenkins job did not start; see jenkins-server-error.log' }

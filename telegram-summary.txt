@@ -1,0 +1,6 @@
+status: blocked — gerçek Windows baseline v7.0.0 build üç denemede de PASS vermedi
+runs: 38473780325 (b2ab9c3, wrapper.exe, 0.0.0.0 NuGet), 38484584524 (9ad3da7, msbuild.cmd shim, dtf.cmd exit 1), 38490924958 (75bf887, wrapper'sız, 3h+ iptal)
+helpers: PASS (Build-Wix / VswhereBootstrap / Publish-Wix tests windows-2025'te her commit'te)
+main: b1fcc0fa korundu, jenkins-wix HEAD = 75bf887 (wrapper'sız hâl), gerçek teslim yok
+bagetter: push yapılmadı (gerçek build PASS olmadı, manifest indirilmedi)
+risk: paralel wixnative race + cmd.exe tokenizasyon tanı eksik

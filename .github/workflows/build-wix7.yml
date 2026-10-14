@@ -14,7 +14,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-2025
-    timeout-minutes: 330
+    timeout-minutes: 150
     steps:
       - name: Checkout Jenkins and Docker recipe
         uses: actions/checkout@v4
@@ -23,6 +23,29 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - name: Prepare disposable Windows Docker storage
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:GITHUB_ACTIONS -ne 'true') { throw 'Storage relocation is restricted to github-hosted runners' }
+          $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='D:'"
+          if ($disk.FreeSpace -lt 60GB) { throw 'D: needs at least 60 GiB free space for the Windows build' }
+          $containers = @(docker ps -aq)
+          if ($LASTEXITCODE -ne 0 -or $containers.Count) { throw 'Refusing to restart Docker with existing containers' }
+          $path = Join-Path $env:ProgramData 'Docker/config/daemon.json'
+          New-Item -ItemType Directory -Force (Split-Path $path) | Out-Null
+          $config = if (Test-Path $path) { Get-Content $path -Raw | ConvertFrom-Json -AsHashtable } else { @{} }
+          $config['data-root'] = 'D:\wix-docker'
+          $candidate = "$path.wix"
+          $config | ConvertTo-Json -Depth 10 | Set-Content $candidate -Encoding utf8NoBOM
+          dockerd --validate --config-file $candidate
+          if ($LASTEXITCODE -ne 0) { throw 'Docker configuration validation failed' }
+          Copy-Item $candidate $path -Force
+          Restart-Service docker
+          (Get-Service docker).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+          $root = docker info --format '{{.DockerRootDir}}'
+          if ($LASTEXITCODE -ne 0 -or $root -ne 'D:\wix-docker') { throw "Docker did not apply the D: storage root: $root" }
+          Write-Host "DOCKER_STORAGE_READY: $root"
       - name: Check Windows Docker host
         shell: pwsh
         run: |
@@ -48,6 +71,7 @@ jobs:
         shell: pwsh
         run: |
           ./tests/Build-Wix.Tests.ps1
+          ./tests/Storage.Tests.ps1
           ./tests/VswhereBootstrap.Tests.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File ./tests/Publish-Wix.Tests.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Publisher regressions failed under Windows PowerShell 5.1' }

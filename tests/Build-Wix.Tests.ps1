@@ -80,7 +80,11 @@ Write-Host 'PASS: stable 7+ tags, rejection boundaries, exact three version repl
     $build=$null; $rejected=$false
     try { . $poll 3>$null } catch { $rejected=$_.Exception.Message -match 'Jenkins job did not start' }
     if (-not $rejected) { throw 'Smoke loop lost its hard startup deadline' }
-    Write-Host 'PASS: Jenkins status recovery after startup and hard initial startup deadline'
+    $criticalDisk=[pscustomobject]@{DeviceID='C:';FreeSpace=0}
+    $rejected=$false
+    try { . $poll 3>$null } catch { $rejected=$_.Exception.Message -match 'Disk space exhausted' }
+    if (-not $rejected) { throw 'Smoke loop keeps waiting after disk exhaustion' }
+    Write-Host 'PASS: Jenkins status recovery, startup deadline and disk-exhaustion rejection'
 }
 
 $docker=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '../Dockerfile'))

@@ -20,7 +20,7 @@ def publishEnabled() {
 
 pipeline {
   agent { label 'windows1' }
-  options { skipDefaultCheckout(true); disableConcurrentBuilds() }
+  options { skipDefaultCheckout(true); disableConcurrentBuilds(); timeout(time: 120, unit: 'MINUTES') }
   parameters {
     booleanParam(name: 'PUBLISH', defaultValue: true, description: 'Push the built packages and symbols to the internal NuGet feed')
   }
@@ -85,6 +85,10 @@ $container = '__CONTAINER__'
 # The host/Docker kernel build selects the Windows Server base image for the ephemeral container.
 $info = docker info --format '{{json .}}' | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or $info.OSType -ne 'windows') { throw 'Windows Docker engine required' }
+$storageDrive = $info.DockerRootDir.Substring(0,2)
+$storageDisk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$storageDrive'"
+if ($storageDisk.FreeSpace -lt 60GB) { throw "Docker storage $storageDrive needs at least 60 GiB free space before a cold build" }
+Write-Host "Docker storage: $($info.DockerRootDir), free $([math]::Round($storageDisk.FreeSpace/1GB,1)) GiB"
 $kernel = [regex]::Match($info.KernelVersion, '(?:^|[^0-9])10[.]0[. ]+([0-9]+)')
 if (-not $kernel.Success) { throw "Unknown Docker kernel version: $($info.KernelVersion)" }
 $build = [int]$kernel.Groups[1].Value

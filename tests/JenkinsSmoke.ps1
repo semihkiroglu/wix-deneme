@@ -55,14 +55,17 @@ $build=$null
 $consoleOffset=0
 $startupDeadline=[DateTime]::UtcNow.AddMinutes(5)
 try {
-    $deadline=[DateTime]::UtcNow.AddHours(4)
+    $deadline=[DateTime]::UtcNow.AddMinutes(130)
     $nextSnapshot=[DateTime]::MinValue
+    $criticalDisk=$null
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($server.HasExited) { throw "Jenkins exited with code $($server.ExitCode)" }
         if ($env:WIX_SMOKE_JENKINSFILE -and [DateTime]::UtcNow -ge $nextSnapshot) {
             try {
                 $stamp=[DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
-                Get-CimInstance Win32_LogicalDisk -OperationTimeoutSec 5 | Select-Object DeviceID,Size,FreeSpace | ConvertTo-Json | Set-Content (Join-Path $Evidence "host-disk-$stamp.json")
+                $disks=@(Get-CimInstance Win32_LogicalDisk -OperationTimeoutSec 5 | Select-Object DeviceID,Size,FreeSpace)
+                $criticalDisk=@($disks | Where-Object { $_.DeviceID -in @('C:','D:') -and $_.FreeSpace -lt 1GB }) | Select-Object -First 1
+                $disks | ConvertTo-Json | Set-Content (Join-Path $Evidence "host-disk-$stamp.json")
                 # This exact name belongs to the one temporary Jenkins job, not another host workload.
                 $diagnostic='Get-CimInstance Win32_Process -OperationTimeoutSec 5 | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Depth 3'
                 $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($diagnostic))
@@ -71,6 +74,7 @@ try {
             } catch { Write-Warning "Diagnostic snapshot unavailable: $($_.Exception.Message)" }
             $nextSnapshot=[DateTime]::UtcNow.AddMinutes(1)
         }
+        if ($criticalDisk) { throw "Disk space exhausted on $($criticalDisk.DeviceID); less than 1 GiB available; see host-disk diagnostics" }
         try { $build=Invoke-RestMethod "$base/job/wix-docker/1/api/json" -TimeoutSec 15 } catch { Write-Warning "Jenkins status request failed; keeping last state: $($_.Exception.Message)" }
         try {
             $console=[string](Invoke-WebRequest "$base/job/wix-docker/1/consoleText" -TimeoutSec 15).Content

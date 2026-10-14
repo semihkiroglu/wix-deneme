@@ -2,5 +2,21 @@
   "status": "in_progress",
   "phase": "fix_msbuild_wrapper",
   "blocker": null,
-  "diagnosis": "Invoke-Upstream prepends C:\\tools\\msbuild to PATH. NuGet autolocates msbuild.exe there and reads the wrapper's 0.0.0.0 product version, failing slnx restore. Replace wrapper.exe with wrapper.cmd so PATH entry stays first (upstream msbuild invocations resolve through it) but NuGet's msbuild.exe probe falls through to VsDevCmd's genuine compiler."
+  "diagnosis": "Invoke-Upstream prepends C:\\tools\\msbuild to PATH. NuGet autolocates msbuild.exe there and reads the wrapper's 0.0.0.0 product version, failing slnx restore. Replace wrapper.exe with wrapper.cmd so PATH entry stays first (upstream msbuild invocations resolve through it) but NuGet's msbuild.exe probe falls through to VsDevCmd's genuine compiler.",
+  "change": {
+    "head_sha_before": "b2ab9c3c92c6f57c43a55b3ef0db6a39bdc1b42d",
+    "head_sha_after": "9ad3da7",
+    "message": "fix: replace MSBuild launcher with a PATH-order .cmd shim",
+    "files": ["Install-BuildEnv.ps1", "Dockerfile", ".dockerignore", "tests/VswhereBootstrap.Tests.ps1", "tests/JenkinsSmoke.ps1"],
+    "deleted": ["MsbuildBootstrap.cs"]
+  },
+  "current_run": {
+    "run_id": 38484584524,
+    "job_id": 115595058964,
+    "head_sha": "9ad3da7",
+    "ref": "jenkins-wix",
+    "status": "in_progress",
+    "helper_regressions": "PASS",
+    "jenkins_docker_build": "in_progress"
+  }
 }

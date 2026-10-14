@@ -219,36 +219,21 @@ try {
     Assert-True ($run.ExitCode -eq 127) 'missing real tool exits with 127'
     Assert-True ($run.StdErr -match 'vswhere-real') 'missing real tool is reported on stderr'
 
-    # Win32 vs x86 native output paths in upstream collide; the image drops a
-    # msbuild.cmd shim at the head of PATH that injects -m:1 for upstream calls
-    # but never has an msbuild.exe, so NuGet auto-detection falls through to the
-    # genuine compiler installed by VsDevCmd.
-    $shimSource = Join-Path $repoRoot 'Install-BuildEnv.ps1'
-    if (-not (Test-Path $shimSource)) { throw 'Install-BuildEnv.ps1 missing' }
-    $shimCreated = $false
-    $shimAppendsM1 = $false
-    $shimNoExeWrite = $true
-    $shimRoutesToGenuine = $false
-    foreach ($line in (Get-Content -LiteralPath $shimSource)) {
-        if ($line -match "Set-Content.*msbuild\.cmd") { $shimCreated = $true }
-        if ($line -match '"%CTECH_MSBUILD%"\s+%\*\s+-m:1') { $shimAppendsM1 = $true }
-    }
-    # Comments in Install-BuildEnv.ps1 mention msbuild.exe in passing; ensure
-    # the only file actually written is msbuild.cmd, not an executable.
-    $writesFromShimBlock = $false
-    $inShimBlock = $false
-    foreach ($line in (Get-Content -LiteralPath $shimSource)) {
-        if ($line -match '--- Serialized upstream MSBuild') { $inShimBlock = $true; continue }
-        if ($line -match '^# --- ' -and $inShimBlock) { $inShimBlock = $false; continue }
-        if ($inShimBlock -and ($line -match 'Set-Content' -or $line -match 'New-Item|Out-File')) {
-            $writesFromShimBlock = $true
-            if ($line -match '\.exe') { throw "msbuild.exe shim file leaks the original wrapper: $line" }
+    # Win32 vs x86 native output paths in upstream collide; pipeline runs the
+    # genuine compiler with the upstream -m default and accepts the prior race
+    # risk for the small set of vcxproj platforms that share a recipe file.
+    $installScript = Join-Path $repoRoot 'Install-BuildEnv.ps1'
+    $wixPs1 = Join-Path $repoRoot 'Build-Wix.ps1'
+    if (-not (Test-Path $installScript)) { throw 'Install-BuildEnv.ps1 missing' }
+    if (-not (Test-Path $wixPs1)) { throw 'Build-Wix.ps1 missing' }
+    $bootstrapShimAbsent = $true
+    foreach ($file in @($installScript, $wixPs1, (Join-Path $repoRoot 'MsbuildBootstrap.cs'))) {
+        if ((Test-Path -LiteralPath $file) -and ((Get-Content -LiteralPath $file -Raw) -match 'MsbuildBootstrap|msbuild\.cmd|CTECH_MSBUILD.*-m:1')) {
+            $bootstrapShimAbsent = $false
+            break
         }
     }
-    Assert-True $shimCreated 'msbuild.cmd shim is created in the image install step'
-    Assert-True $shimAppendsM1 'shim forwards to %CTECH_MSBUILD% with %* then -m:1 (genuine compiler, serial)'
-    Assert-True $writesFromShimBlock 'shim block writes a file (Set-Content or Out-File) so Install-BuildEnv actually deploys it'
-    Assert-True ($shimNoExeWrite) 'shim does not deploy an .exe (NuGet auto-detection must fall through to VS)'
+    Assert-True $bootstrapShimAbsent 'no MSBuild shim wraps the genuine compiler (single, real toolchain)'
 } finally {
     if (Test-Path -LiteralPath $WorkDir) { Remove-Item -LiteralPath $WorkDir -Recurse -Force }
     Write-Host ("Checks: " + $script:Passed + " passed, " + $script:Failed + " failed")

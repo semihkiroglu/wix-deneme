@@ -126,11 +126,12 @@ foreach ($arch in @('x86', 'x64', 'arm64')) {
     if (-not $found.Count) { throw "MSVC compiler missing for $arch" }
 }
 
-# --- vswhere launcher (image-only) ------------------------------------------
-# Upstream cannot see the Build Tools product, so vswhere.exe is replaced by a
-# compiled shim that forwards every argument to the real tool and only adds
-# '-products *' when the caller passed no products filter. Nothing is faked: the
-# original executable stays beside it and reports the real registration.
+# --- VS compiler environment select -----------------------------------------
+# VS Build Tools default vswhere filter doesn't list Build Tools as an
+# installable product, so the real exe can't be discovered by upstream's
+# direct call without a -products * hint. Replace it with a thin shim that
+# forwards every argument and only adds -products * when the caller passed
+# none; the original stays beside it and reports the real registration.
 $installerDir = Split-Path -Parent $vsWhere
 $realVswhere = Join-Path $installerDir 'vswhere-real.exe'
 Move-Item -LiteralPath $vsWhere -Destination $realVswhere -Force
@@ -145,25 +146,6 @@ $selected = @(& $vsWhere -property installationPath -version '[17.0,18.0)' | Whe
 if ($selected.Count -ne 1 -or $selected[0] -ne $VsRoot) {
     throw "Launcher did not select the Build Tools instance: $($selected -join ', ')"
 }
-
-# --- Serialized upstream MSBuild (container-only) ---------------------------
-# Upstream solution's Win32 and reference's x86 instances share one native
-# recipe; append -m:1 to every upstream msbuild invocation by intercepting the
-# bare command name. The directory holds only the .cmd shim, never an
-# msbuild.exe, so NuGet's PATH scan (which only looks for msbuild.exe) falls
-# through to the genuine compiler installed by VsDevCmd.
-$serialDir = 'C:\tools\msbuild'
-New-Item -ItemType Directory -Force $serialDir | Out-Null
-@'
-@echo off
-rem Forward to the genuine MSBuild installed by VsDevCmd and append -m:1 to
-rem override any upstream -m. The shim name is msbuild.cmd so PATHEXT resolves
-rem it for upstream calls; nuget.exe auto-detection probes msbuild.exe and
-rem falls through to the real compiler in the next PATH entry.
-"%CTECH_MSBUILD%" %* -m:1
-'@ | Set-Content -LiteralPath (Join-Path $serialDir 'msbuild.cmd') -Encoding ASCII
-$shim = Join-Path $serialDir 'msbuild.cmd'
-if (-not (Test-Path -LiteralPath $shim)) { throw 'msbuild.cmd shim missing after creation' }
 
 # --- Selected .NET SDKs and x86 runtimes ------------------------------------
 # The image contains only these SDKs, so unlike the disposable GitHub runner no

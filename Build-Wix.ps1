@@ -30,7 +30,7 @@ function Invoke-Native([string]$Executable, [string[]]$Arguments) {
 
 function Invoke-Upstream([string[]]$Commands) {
     $batch = Join-Path $env:TEMP ('wix-' + [Guid]::NewGuid().ToString('N') + '.cmd')
-    $lines = @('@echo off', "call `"$env:CTECH_VSDEVCMD`" -no_logo -arch=amd64", 'if errorlevel 1 exit /b 1', 'set "PATH=C:\tools\msbuild;%PATH%"')
+    $lines = @('@echo off', "call `"$env:CTECH_VSDEVCMD`" -no_logo -arch=amd64", 'if errorlevel 1 exit /b 1')
     foreach ($command in $Commands) { $lines += @($command, 'if errorlevel 1 exit /b 1') }
     [IO.File]::WriteAllLines($batch, $lines + 'exit /b 0')
     try { Invoke-Native 'cmd.exe' @('/d','/c',$batch) } finally { Remove-Item $batch -Force }

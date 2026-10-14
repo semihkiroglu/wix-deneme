@@ -3,6 +3,9 @@
 ARG BASE_IMAGE=mcr.microsoft.com/windows/server:ltsc2022
 FROM ${BASE_IMAGE}
 
+# Upstream LongPathFixture creates an MSI database (MsiOpenDatabase) under a >MAX_PATH path; msi.dll only allows that when long paths are enabled OS-wide. GitHub-hosted images (where the accepted runs passed) have this key; the base image does not.
+RUN reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f
+
 COPY Install-BuildEnv.ps1 VswhereBootstrap.cs Build-Wix.ps1 C:\pipeline\
 
 ENV TESTINGPLATFORM_DIAGNOSTIC=1 `

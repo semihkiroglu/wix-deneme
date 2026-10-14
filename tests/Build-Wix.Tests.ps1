@@ -91,4 +91,6 @@ $docker=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '../Dockerfile'))
 foreach ($setting in @('TESTINGPLATFORM_DIAGNOSTIC=1','TESTINGPLATFORM_DIAGNOSTIC_VERBOSITY=Trace','TESTINGPLATFORM_DIAGNOSTIC_OUTPUT_DIRECTORY=C:\output\logs\testdiagnostics')) {
     if (-not $docker.Contains($setting)) { throw "Test diagnostics would be lost inside the build container: $setting" }
 }
-Write-Host 'PASS: test diagnostics write into the mounted artifact output'
+# Upstream LongPathFixture runs `Database.Create` (MsiOpenDatabase) on a >MAX_PATH path; msi.dll only allows that when long paths are enabled OS-wide.
+if (-not $docker.Contains('Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f')) { throw 'LongPathFixture fails inside the container unless the image enables LongPathsEnabled' }
+Write-Host 'PASS: test diagnostics write into the mounted artifact output and OS-wide long paths are enabled in the image'

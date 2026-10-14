@@ -131,6 +131,8 @@ if (-not $build.Contains('$ExpectedTestCounts')) { throw 'Build-Wix must pin the
 if (-not $build.Contains('(measured: ')) { throw 'Build-Wix must report measured result counts when failing an unpinned release' }
 if ($build.Contains('No pinned test result counts')) { throw 'An unpinned release must be measured after the tests, not rejected before them' }
 if (-not $build.Contains('WixE2E failures are not container-limited')) { throw 'Build-Wix must validate the WixE2E tail TRX after the container-limited stage' }
+if (-not $build.Contains('@($burnTrx,$msiTrx,$wixTrx)')) { throw 'A fully green test chain must validate all three TRX files' }
+if (-not $build.Contains('WixE2E failures: ')) { throw 'A fully green test chain must fail on WixE2E failures' }
 
 function New-TestTrx([string]$Path, [string]$Counters, [string]$Results, [string]$Outcome = 'Failed') {
     [IO.File]::WriteAllText($Path, '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><ResultSummary outcome="' + $Outcome + '"><Counters ' + $Counters + ' /></ResultSummary><Results>' + $Results + '</Results></TestRun>')

@@ -324,6 +324,7 @@ try {
     $results = Join-Path $source 'build\logs\TestResults'
     $burnTrx = Join-Path $results 'WixToolsetTest.BurnE2E.trx'
     $msiTrx = Join-Path $results 'WixToolsetTest.MsiE2E.trx'
+    $wixTrx = Join-Path $results 'WixToolsetTest.WixE2ETests.trx'
     $wixState = $null
     if ($testExit -ne 0) {
         # Windows containers cannot start the Windows Firewall and 'Server' services, so the MsiE2E fixtures
@@ -339,20 +340,23 @@ try {
         $unexpected = @($msiFailed | Where-Object { $_ -notin $AllowedContainerFailures })
         if ($unexpected.Count) { throw "Unexpected MSI E2E failures: $($unexpected -join '; ')" }
         # The upstream chain aborts at the MSI stage, so the tail suite has not run yet; this is its first run, not a retry.
-        $wixTrx = Join-Path $results 'WixToolsetTest.WixE2ETests.trx'
         Invoke-Upstream @('cd /d src\test', "dotnet test wix -c Release --nologo -l `"trx;LogFileName=$wixTrx`"")
         $wixState = Get-TrxState $wixTrx
         $wixFailed = @(Assert-TrxConsistent $wixState $wixTrx $wixExpected @('Completed'))
         if ($wixFailed.Count) { throw "WixE2E failures are not container-limited: $($wixFailed -join '; ')" }
     } else {
-        # A fully green chain is only accepted with its complete, consistent, failure-free result sets.
-        foreach ($trx in @($burnTrx,$msiTrx)) { if (-not (Test-Path $trx)) { throw "Missing test results for a green test chain: $trx" } }
+        # A fully green chain is only accepted with its complete, consistent, failure-free result sets; the
+        # chain itself runs the WixE2E tail, so that TRX is validated here too.
+        foreach ($trx in @($burnTrx,$msiTrx,$wixTrx)) { if (-not (Test-Path $trx)) { throw "Missing test results for a green test chain: $trx" } }
         $burnState = Get-TrxState $burnTrx
         $burnFailed = @(Assert-TrxConsistent $burnState $burnTrx $burnExpected @('Completed'))
         if ($burnFailed.Count) { throw "Burn E2E failures: $($burnFailed -join '; ')" }
         $msiState = Get-TrxState $msiTrx
         $msiFailed = @(Assert-TrxConsistent $msiState $msiTrx $msiExpected @('Completed'))
         if ($msiFailed.Count) { throw "MSI E2E failures: $($msiFailed -join '; ')" }
+        $wixState = Get-TrxState $wixTrx
+        $wixFailed = @(Assert-TrxConsistent $wixState $wixTrx $wixExpected @('Completed'))
+        if ($wixFailed.Count) { throw "WixE2E failures: $($wixFailed -join '; ')" }
     }
     if (-not $counts) {
         $measured = @("BurnE2E=$(@($burnState.Results).Count)", "MsiE2E=$(@($msiState.Results).Count)")

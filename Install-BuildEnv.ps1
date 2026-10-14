@@ -48,7 +48,9 @@ $LegacyCommonVsixSha256 = '5e45d0660f67ae22ae6307699bca214cea2a998ca8f534328f85b
 $LegacyMstestSha256 = 'deecfaf419f82cc0f8a97456e5e2c0114ba96853d5f5ab95544d269b4c5898ab'
 $LegacyMstestIdentity = 'Microsoft.VisualStudio.QualityTools.UnitTestFramework, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'
 
-function Get-PinnedFile([string]$Url, [string]$Path, [string]$Sha256) {
+function Get-PinnedFile([string]$Url, [string]$Path, [string]$Sha256 = '') {
+    # Every download must carry its pinned hash; a forgotten pin fails loudly instead of skipping verification.
+    if (-not $Sha256) { throw "Get-PinnedFile requires the pinned SHA-256 of $Url" }
     Write-Host "Downloading $Url"
     Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Path
     if (-not (Test-Path -LiteralPath $Path) -or (Get-Item -LiteralPath $Path).Length -eq 0) {
@@ -202,7 +204,7 @@ if ($nugetVersion -notlike "$NuGetVersion*") { throw "Unexpected nuget.exe versi
 
 # --- Legacy MSTest reference (official VS payload) --------------------------
 $legacyVsix = Join-Path $DownloadRoot 'Legacy.Common.payload.vsix'
-Get-PinnedFile $LegacyCommonVsixUrl $legacyVsix
+Get-PinnedFile $LegacyCommonVsixUrl $legacyVsix -Sha256 $LegacyCommonVsixSha256
 $payloadHash = Get-Sha256 $legacyVsix
 if ($payloadHash -ne $LegacyCommonVsixSha256) { throw "Legacy.Common payload hash mismatch: $payloadHash" }
 

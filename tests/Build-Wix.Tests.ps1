@@ -159,7 +159,7 @@ foreach ($pin in @(
     'd4bf83d6a860ccae9af44e508e1e00a39f09db6fa78a9ba5543b94d87ca22a29',
     '992d70cac5b06c38efec91806caba64cdcc07e6d963a0959dbbbaf264d33b800'
 )) { if (-not $envScript.Contains($pin)) { throw "Install-BuildEnv is missing a pinned payload hash: $pin" } }
-if (@([regex]::Matches($envScript, 'Get-PinnedFile \S+ \S+ -Sha256')).Count -lt 5) { throw 'All toolchain payload downloads must pass -Sha256' }
+if (@([regex]::Matches($envScript, 'Get-PinnedFile \S+ \S+ -Sha256')).Count -lt 6) { throw 'All toolchain payload downloads must pass -Sha256' }
 Write-Host 'PASS: the toolchain payloads are hash-pinned'
 
 # The smoke harness must not verify downloads against sidecar checksums fetched from the same source.

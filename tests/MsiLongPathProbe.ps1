@@ -1,5 +1,6 @@
-# Host-side driver: build the pipeline image and run the MSI long-path probe inside it.
+# Host-side driver: build the pipeline image and run a container probe script inside it.
 # Diagnostic only on test_only dispatches; it does not gate the Jenkins smoke.
+param([string]$ContainerScript = 'MsiLongPathProbeContainer.ps1')
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'MSI long-path probe requires Windows' }
 $root = Split-Path $PSScriptRoot -Parent
@@ -27,9 +28,9 @@ $image = 'wix-longpath-probe'
 try {
     docker build --force-rm --build-arg "BASE_IMAGE=$base" -f (Join-Path $root 'Dockerfile') -t $image $root
     if ($LASTEXITCODE -ne 0) { throw 'Probe image build failed' }
-    docker run --rm --entrypoint powershell -v "${PSScriptRoot}:C:\probe" $image -NoProfile -ExecutionPolicy Bypass -File C:\probe\MsiLongPathProbeContainer.ps1
+    docker run --rm --entrypoint powershell -v "${PSScriptRoot}:C:\probe" $image -NoProfile -ExecutionPolicy Bypass -File "C:\probe\$ContainerScript"
     if ($LASTEXITCODE -ne 0) { throw "Container probe failed with $LASTEXITCODE" }
-    Write-Host 'LONGPATH_PROBE_PASS'
+    Write-Host "CONTAINER_PROBE_PASS: $ContainerScript"
 } finally {
     docker rmi -f $image 2>$null | Out-Null
 }

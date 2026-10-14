@@ -60,6 +60,10 @@ jobs:
         if: ${{ inputs.test_only }}
         shell: pwsh
         run: ./tests/MsiLongPathProbe.ps1
+      - name: Probe container services required by the upstream MsiE2E tests
+        if: ${{ inputs.test_only }}
+        shell: pwsh
+        run: ./tests/MsiLongPathProbe.ps1 -ContainerScript ContainerServicesProbeContainer.ps1
       - name: Probe upstream native process capture with real and wrapped vswhere
         shell: pwsh
         run: ./tests/NativeCaptureProbe.ps1

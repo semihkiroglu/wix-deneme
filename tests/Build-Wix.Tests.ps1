@@ -94,3 +94,9 @@ foreach ($setting in @('TESTINGPLATFORM_DIAGNOSTIC=1','TESTINGPLATFORM_DIAGNOSTI
 # Upstream LongPathFixture runs `Database.Create` (MsiOpenDatabase) on a >MAX_PATH path; msi.dll only allows that when long paths are enabled OS-wide.
 if (-not $docker.Contains('Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f')) { throw 'LongPathFixture fails inside the container unless the image enables LongPathsEnabled' }
 Write-Host 'PASS: test diagnostics write into the mounted artifact output and OS-wide long paths are enabled in the image'
+
+# The database itself is opened through an 8.3 short name (LongPathUtil.CreateOrGetShortPath -> GetShortPathNameW); container volumes create no aliases by default.
+$build=(Get-Content $script -Raw)
+if (-not $build.Contains("'8dot3name','set','C:','0'")) { throw 'Build-Wix must enable 8.3 short names for the upstream long-path MSI test' }
+if ($build -notmatch 'wix-8dot3-probe') { throw 'Build-Wix must fail fast when the container cannot create 8.3 short names' }
+Write-Host 'PASS: the container enables the 8.3 short names the upstream long-path MSI test relies on'

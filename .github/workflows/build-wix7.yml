@@ -33,6 +33,17 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $info.OSType -ne 'windows') { throw 'Windows Docker engine required' }
           Get-CimInstance Win32_OperatingSystem | Select-Object Caption,BuildNumber
           Get-PSDrive -PSProvider FileSystem | Select-Object Name,Used,Free
+      - name: Probe upstream native process capture with real and wrapped vswhere
+        shell: pwsh
+        run: ./tests/NativeCaptureProbe.ps1
+      - name: Upload native capture diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-capture-${{ github.run_id }}
+          path: ${{ runner.temp }}/wix-native-capture-probe/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Run helper regressions including host PowerShell 5.1
         shell: pwsh
         run: |

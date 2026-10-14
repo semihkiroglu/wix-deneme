@@ -60,23 +60,27 @@ function Get-TrxState([string]$TrxPath) {
 }
 
 function Assert-TrxConsistent($State, [string]$TrxPath, [int]$MinimumTotal) {
-    # A summary whose counters disagree with the individual results, a non-terminal outcome, or a run-level
-    # error marks a partial/aborted run; such a TRX never satisfies the container-limited allowlist.
-    $nonzero = @('error','timeout','aborted','inconclusive','notRunnable') | Where-Object { [int]$State.Counters.GetAttribute($_) -ne 0 }
-    if ($nonzero.Count) { throw "TRX reports run-level errors ($($nonzero -join ', ')): $TrxPath" }
-    $actual = @{}
+    # Mirrors the real VSTest/xunit TRX shape: counters.total/passed/failed track the individual results and
+    # 'executed' counts Passed+Failed; skipped tests appear as NotExecuted nodes while counters.notExecuted
+    # stays 0, so skipped == total - executed. An aborted/partial run breaks these equalities or flips a
+    # run-level counter, and such a TRX never satisfies the container-limited allowlist.
+    $bad = @('error','timeout','aborted','inconclusive','passedButRunAborted','notRunnable') | Where-Object { [int]$State.Counters.GetAttribute($_) -ne 0 }
+    if ($bad.Count) { throw "TRX reports run-level errors ($($bad -join ', ')): $TrxPath" }
+    $counts = @{ Passed = 0; Failed = 0; NotExecuted = 0 }
     foreach ($result in $State.Results) {
         if ($result.Outcome -notin @('Passed','Failed','NotExecuted')) { throw "Unexpected test outcome '$($result.Outcome)' for '$($result.Name)': $TrxPath" }
-        $actual[$result.Outcome] = 1 + [int]($actual[$result.Outcome])
+        $counts[$result.Outcome]++
     }
-    foreach ($pair in @(@('passed','Passed'), @('failed','Failed'), @('notExecuted','NotExecuted'))) {
-        $declared = [int]$State.Counters.GetAttribute($pair[0])
-        $found = [int]($actual[$pair[1]])
-        if ($declared -ne $found) { throw "TRX counter '$($pair[0])' is $declared but $found results carry it: $TrxPath" }
-    }
-    if ([int]$State.Counters.GetAttribute('total') -ne @($State.Results).Count) { throw "TRX total does not match its result count: $TrxPath" }
-    if (@($State.Results).Count -lt $MinimumTotal) { throw "TRX contains fewer than the expected at least $MinimumTotal results: $TrxPath" }
-    return @($State.Results | Where-Object { $_.Outcome -notin @('Passed','NotExecuted') } | ForEach-Object { $_.Name })
+    $passed = [int]$State.Counters.GetAttribute('passed')
+    $failed = [int]$State.Counters.GetAttribute('failed')
+    $total = [int]$State.Counters.GetAttribute('total')
+    $executed = [int]$State.Counters.GetAttribute('executed')
+    if ($passed -ne $counts.Passed) { throw "TRX counter 'passed' is $passed but $($counts.Passed) results carry it: $TrxPath" }
+    if ($failed -ne $counts.Failed) { throw "TRX counter 'failed' is $failed but $($counts.Failed) results carry it: $TrxPath" }
+    if ($total -ne @($State.Results).Count) { throw "TRX total is $total but $(@($State.Results).Count) results are listed: $TrxPath" }
+    if ($executed -ne $passed + $failed) { throw "TRX executed count $executed does not equal passed+failed ($($passed + $failed)): $TrxPath" }
+    if ($total -lt $MinimumTotal) { throw "TRX contains fewer than the expected at least $MinimumTotal results: $TrxPath" }
+    return @($State.Results | Where-Object { $_.Outcome -ne 'Passed' -and $_.Outcome -ne 'NotExecuted' } | ForEach-Object { $_.Name })
 }
 
 function Start-TestServices {

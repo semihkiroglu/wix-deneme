@@ -133,19 +133,20 @@ function New-TestTrx([string]$Path, [string]$Counters, [string]$Results) {
 }
 $trx=Join-Path ([IO.Path]::GetTempPath()) ('wix-allowlist-' + [Guid]::NewGuid().ToString('N') + '.trx')
 try {
-    New-TestTrx $trx 'total="3" executed="2" passed="1" failed="1" error="0" timeout="0" aborted="0" inconclusive="0" notExecuted="1"' '<UnitTestResult testName="A.B" outcome="Failed" /><UnitTestResult testName="A.C" outcome="Passed" /><UnitTestResult testName="A.D" outcome="NotExecuted" />'
+    # Real semantics: skipped tests are NotExecuted nodes while counters.notExecuted is 0 (skipped = total - executed).
+    New-TestTrx $trx 'total="3" executed="2" passed="1" failed="1" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Failed" /><UnitTestResult testName="A.C" outcome="Passed" /><UnitTestResult testName="A.D" outcome="NotExecuted" />'
     $failed=@(Assert-TrxConsistent (Get-TrxState $trx) $trx 1)
     if ($failed.Count -ne 1 -or $failed[0] -ne 'A.B') { throw 'TRX failed-test extraction is wrong' }
-    New-TestTrx $trx 'total="3" executed="2" passed="1" failed="2" error="0" timeout="0" aborted="0" inconclusive="0" notExecuted="1"' '<UnitTestResult testName="A.B" outcome="Failed" /><UnitTestResult testName="A.C" outcome="Passed" /><UnitTestResult testName="A.D" outcome="NotExecuted" />'
+    New-TestTrx $trx 'total="3" executed="3" passed="1" failed="2" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Failed" /><UnitTestResult testName="A.C" outcome="Passed" /><UnitTestResult testName="A.D" outcome="NotExecuted" />'
     $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 1 | Out-Null } catch { $rejected=$_.Exception.Message -match 'counter' }
     if (-not $rejected) { throw 'TRX with summary counters that disagree with its results was accepted' }
-    New-TestTrx $trx 'total="2" executed="2" passed="1" failed="0" error="0" timeout="0" aborted="1" inconclusive="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Passed" /><UnitTestResult testName="A.C" outcome="Aborted" />'
+    New-TestTrx $trx 'total="2" executed="1" passed="1" failed="0" error="0" timeout="0" aborted="1" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Passed" /><UnitTestResult testName="A.C" outcome="Aborted" />'
     $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 1 | Out-Null } catch { $rejected=$true }
     if (-not $rejected) { throw 'TRX with an aborted test was accepted' }
-    New-TestTrx $trx 'total="1" executed="1" passed="0" failed="0" error="1" timeout="0" aborted="0" inconclusive="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Passed" />'
+    New-TestTrx $trx 'total="1" executed="1" passed="1" failed="0" error="1" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Passed" />'
     $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 1 | Out-Null } catch { $rejected=$_.Exception.Message -match 'run-level' }
     if (-not $rejected) { throw 'TRX with run-level errors was accepted' }
-    New-TestTrx $trx 'total="1" executed="1" passed="1" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Passed" />'
+    New-TestTrx $trx 'total="1" executed="1" passed="1" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Passed" />'
     $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 40 | Out-Null } catch { $rejected=$_.Exception.Message -match 'at least' }
     if (-not $rejected) { throw 'TRX with fewer results than the expected minimum was accepted' }
 } finally { Remove-Item $trx -Force }

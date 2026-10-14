@@ -30,13 +30,15 @@ altında. Her build kendi artifact dizinini sıfırdan yazar; eski dosyalar arş
   Docker data-root diski ≥ 60 GiB boş olmalı (build guard'ı); her build container'ı 120 GB
   yazılabilir katman alır.
 - **Job:** "Pipeline script from SCM" → bu depo, `Jenkinsfile`. Zamanlama dosyada gömülüdür:
-  her gün 03:00 (Europe/Istanbul). `PUBLISH` parametresi varsayılan `true`; kuru koşu için `false`.
+  her gün 03:00 saat diliminde (Europe/Istanbul; dakika Jenkins dağıtımıyla belirlenir).
+  `PUBLISH` parametresi varsayılan `true`; yalnız yayın (push) yapmadan koşmak için `false`.
 - **Kimlikler:** `nuget-push-api-key` (Secret text) → yayın anahtarı `NUGET_API_KEY` olarak enjekte
   edilir. Feed adresi `FEED_URL` ortam değişkeninden okunur; tanımsızsa dosyadaki yer tutucu
   kullanılır — gerçek yayın öncesi mutlaka tanımlanmalıdır. GitHub Releases API için opsiyonel
   `GITHUB_TOKEN` (rate limit) verilebilir.
 - **Ağ:** container; `github.com` (klon + pwsh/MinGit indirmeleri), `download.visualstudio.microsoft.com`
-  (VS Build Tools), `dot.net` + MS CDN (.NET SDK), `dist.nuget.org` (nuget.exe), `mcr.microsoft.com`
+  (VS Build Tools), `dot.net` + MS CDN (.NET SDK), `dist.nuget.org` (nuget.exe), `api.nuget.org` +
+  `globalcdn.nuget.org` (NuGet restore ve resmi paket varlık sorgusu), `mcr.microsoft.com`
   (baz imaj) adreslerine erişebilmeli. Agent ayrıca `api.github.com` (sürüm keşfi), `mcr.microsoft.com`
   (imaj çekme) ve iç feed'e erişir.
 - **Kalıcı durum:** Jenkins workspace kalıcıdır; keşif kararı `artifacts/<tag>/release-manifest.json`
@@ -59,14 +61,15 @@ güvenlik kapısıdır (taşınmış tag ve beklenmeyen test seti tespiti).
   job oluşturur ve bu `Jenkinsfile`'ı uçtan uca koşturur (disposable Windows makinede).
 - `tests/Build-Wix.Tests.ps1`, `tests/Publish-Wix.Tests.ps1` (mock feed — gerçek push yok),
   `tests/VswhereBootstrap.Tests.ps1`, `tests/Storage.Tests.ps1` — yerel doğrulama testleri.
-- Gerçek feed'e dokunmadan koşmak için job'u `PUBLISH=false` ile çalıştırın.
+- Yayın (push) yapmadan koşmak için job'u `PUBLISH=false` ile çalıştırın; keşif aşaması yerel manifest
+  bulunduğunda feed'e yalnız salt-okunur sorgu yapabilir.
 
 ## Güvenlik ve yayın
 
 Bu depo hiçbir iç feed adresi, API anahtarı veya kurumsal secret taşımaz; yayın anahtarı yalnız
 Jenkins credential store'dan (`nuget-push-api-key`) verilir. Paket ve sembol dosyaları yayın
 öncesi manifest hash'leriyle doğrulanır; feed'in ilan ettiği uç noktalar yalnız HTTPS ve feed
-origin'i içinde kabul edilir. Container araç zinciri indirmeleri hash pinlidir (bkz.
-`Install-BuildEnv.ps1`).
+origin'i içinde kabul edilir (açıkça yapılandırılan ayrı HTTPS sembol sunucusu hariç). Container
+araç zinciri indirmeleri hash pinlidir (bkz. `Install-BuildEnv.ps1`).
 
 Lisans: upstream MS-RL (kaynak ağacına dokunulmaz).

@@ -28,6 +28,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:GITHUB_ACTIONS -ne 'true') { throw 'Storage relocation is restricted to github-hosted runners' }
+          # Fresh runners occasionally boot before the Docker service is up; wait for its pipe before touching the daemon.
+          $deadline = (Get-Date).AddSeconds(90)
+          while ($true) {
+            docker info --format '{{.DockerRootDir}}' *> $null
+            if ($LASTEXITCODE -eq 0) { break }
+            if ((Get-Date) -gt $deadline) { throw 'Docker engine did not become ready on this runner' }
+            Start-Service docker -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 5
+          }
           $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='D:'"
           if ($disk.FreeSpace -lt 60GB) { throw 'D: needs at least 60 GiB free space for the Windows build' }
           $containers = @(docker ps -aq)

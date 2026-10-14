@@ -470,13 +470,12 @@ try {
   Assert-Equal 'pushed' ([string]($summary | Where-Object { $_.id -eq 'WixToolset.Sdk' }).symbols) 'summary reports symbols as pushed'
 
   $beforeSecondRun = @(Get-PutLog $feed).Count
-  $summary2 = @(Publish-WixManifest -ManifestDir $goodDir -FeedUrl $feed.IndexUrl -ApiKey 'test-key-123')
+  Assert-Throws { Publish-WixManifest -ManifestDir $goodDir -FeedUrl $feed.IndexUrl -ApiKey 'test-key-123' } '409' 'second run: an unverifiable symbol conflict (no symbol server endpoint) is fatal'
   $newPuts = @(Get-PutLog $feed | Select-Object -Skip $beforeSecondRun)
-  Assert-Equal 0 @($newPuts | Where-Object { [int]$_.status -lt 300 }).Count 'second run accepts no new push (idempotent)'
-  Assert-Equal 1 $newPuts.Count 'second run re-attempts only the snupkg (explicit symbol push is not skipped after a conflict)'
+  Assert-Equal 0 @($newPuts | Where-Object { [int]$_.status -lt 300 }).Count 'second run accepts no new push'
+  Assert-Equal 1 $newPuts.Count 'second run re-attempts only the snupkg'
   Assert-Equal '/custom/push/sym' ([string]$newPuts[0].path) 'the re-attempted push is the symbol package'
-  Assert-Equal 409 ([int]$newPuts[0].status) 'symbol re-attempt answers 409 and is treated as already present'
-  Assert-Equal 'exists' ([string]($summary2 | Where-Object { $_.id -eq 'WixToolset.Sdk' }).package) 'second run verifies the existing package by hash and reports exists'
+  Assert-Equal 409 ([int]$newPuts[0].status) 'symbol re-attempt answers 409'
 } finally { Stop-MockFeed $feed }
 
 Write-Host ''
@@ -721,6 +720,36 @@ $plainHttp = @(
 $feed = Start-MockFeed -Options @{ ReleasesJson = $script:BasicReleases; IndexOverride = $plainHttp }
 try {
   Assert-Throws { Publish-WixManifest -ManifestDir $trustDir -FeedUrl $feed.IndexUrl -ApiKey 'k' } 'HTTPS' 'a non-HTTPS endpoint outside loopback is refused'
+} finally { Stop-MockFeed $feed }
+
+Write-Host ''
+Write-Host '== publish: symbol conflict verification via the symbol server =='
+# With a symbol server endpoint the debug-key PDB readback verifies the conflicting remote symbols, so the conflict is acceptable.
+$symRedoDir = Join-Path $script:Work 'sym-redo'
+$redoNupkg = New-TestPackage -Dir $symRedoDir -Id 'WixToolset.Sdk' -Version '7.0.0.1'
+$redoSnupkg = New-TestPackage -Dir $symRedoDir -Id 'WixToolset.Sdk' -Version '7.0.0.1' -Kind 'snupkg'
+New-TestManifest -Dir $symRedoDir -Tag 'v7.0.0' -Version '7.0.0.1' -Packages @(
+  [pscustomobject]@{ id = 'WixToolset.Sdk'; file = 'WixToolset.Sdk.7.0.0.1.nupkg'; sha256 = (Get-FileShaHex $redoNupkg); public = $true; symbols = @([pscustomobject]@{ file = 'WixToolset.Sdk.7.0.0.1.snupkg'; sha256 = (Get-FileShaHex $redoSnupkg); pdbs = @([pscustomobject]@{ name = 'WixToolset.Sdk.pdb'; key = 'aabbccdd'; sha256 = ('d' * 64) }) }) }
+)
+$feed = Start-MockFeed -Options @{ ReleasesJson = $script:BasicReleases; SymbolServer = $true; Preload = @(
+  [pscustomobject]@{ relpath = 'wixtoolset.sdk/7.0.0.1/wixtoolset.sdk.7.0.0.1.nupkg'; source = $redoNupkg },
+  [pscustomobject]@{ relpath = 'wixtoolset.sdk/7.0.0.1/wixtoolset.sdk.7.0.0.1.snupkg'; source = $redoSnupkg }
+) }
+try {
+  $summary = @(Publish-WixManifest -ManifestDir $symRedoDir -FeedUrl $feed.IndexUrl -ApiKey 'k')
+  Assert-Equal 'exists' ([string]($summary | Where-Object { $_.id -eq 'WixToolset.Sdk' }).package) 'already-published package is verified by hash readback'
+  Assert-Equal 'exists' ([string]($summary | Where-Object { $_.id -eq 'WixToolset.Sdk' }).symbols) 'the symbol conflict is accepted only because the symbol server readback verified the PDBs'
+} finally { Stop-MockFeed $feed }
+
+Write-Host ''
+Write-Host '== publish: endpoint trust policy =='
+Assert-Throws { Assert-TrustedFeedEndpoint -Url 'http://127.0.0.1:1/x' -FeedUrl 'https://127.0.0.1:1/v3/index.json' -Purpose 'Test' } 'HTTPS' 'an HTTP endpoint under an HTTPS feed is refused even on loopback'
+Assert-Throws { Assert-TrustedFeedEndpoint -Url 'http://evil.example/v3/index.json' -FeedUrl 'http://evil.example/v3/index.json' -Purpose 'Test' } 'HTTPS' 'a non-loopback HTTP feed endpoint is refused'
+Assert-True ($null -eq (Assert-TrustedFeedEndpoint -Url 'http://127.0.0.1:1/x' -FeedUrl 'http://127.0.0.1:1/v3/index.json' -Purpose 'Test')) 'an HTTP loopback pair stays allowed for the local test feed'
+$feed = Start-MockFeed -Options @{ ReleasesJson = $script:BasicReleases }
+try {
+  Assert-Throws { Publish-WixManifest -ManifestDir $trustDir -FeedUrl $feed.IndexUrl -ApiKey 'k' -SymbolServerUrl 'http://evil.example/symbols' } 'HTTPS' 'an explicit non-HTTPS symbol server is refused'
+  Assert-Equal 0 @(Get-PutLog $feed).Count 'no push attempted with an untrusted explicit symbol server'
 } finally { Stop-MockFeed $feed }
 
 Write-Host ''

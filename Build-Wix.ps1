@@ -56,16 +56,17 @@ function Get-TrxState([string]$TrxPath) {
     $counters = $summary.SelectSingleNode('*[local-name()="Counters"]', $namespace)
     if ($null -eq $counters) { throw "TRX has no counters: $TrxPath" }
     $results = @($xml.SelectNodes('//*[local-name()="UnitTestResult"]', $namespace) | ForEach-Object { [pscustomobject]@{ Name = $_.GetAttribute('testName'); Outcome = $_.GetAttribute('outcome') } })
-    [pscustomobject]@{ Counters = $counters; Results = $results }
+    [pscustomobject]@{ Outcome = $summary.GetAttribute('outcome'); Counters = $counters; Results = $results }
 }
 
-function Assert-TrxConsistent($State, [string]$TrxPath, [int]$MinimumTotal) {
+function Assert-TrxConsistent($State, [string]$TrxPath, [int]$ExpectedTotal, [string[]]$ExpectedOutcomes = @('Completed')) {
     # Mirrors the real VSTest/xunit TRX shape: counters.total/passed/failed track the individual results and
     # 'executed' counts Passed+Failed; skipped tests appear as NotExecuted nodes while counters.notExecuted
-    # stays 0, so skipped == total - executed. An aborted/partial run breaks these equalities or flips a
-    # run-level counter, and such a TRX never satisfies the container-limited allowlist.
+    # stays 0. The suite must hold exactly its pinned result count and end in the expected summary state; an
+    # aborted/partial run breaks these equalities or flips a run-level counter.
     $bad = @('error','timeout','aborted','inconclusive','passedButRunAborted','notRunnable') | Where-Object { [int]$State.Counters.GetAttribute($_) -ne 0 }
     if ($bad.Count) { throw "TRX reports run-level errors ($($bad -join ', ')): $TrxPath" }
+    if ($State.Outcome -notin $ExpectedOutcomes) { throw "TRX summary outcome '$($State.Outcome)' is not one of $($ExpectedOutcomes -join '/'): $TrxPath" }
     $counts = @{ Passed = 0; Failed = 0; NotExecuted = 0 }
     foreach ($result in $State.Results) {
         if ($result.Outcome -notin @('Passed','Failed','NotExecuted')) { throw "Unexpected test outcome '$($result.Outcome)' for '$($result.Name)': $TrxPath" }
@@ -78,8 +79,8 @@ function Assert-TrxConsistent($State, [string]$TrxPath, [int]$MinimumTotal) {
     if ($passed -ne $counts.Passed) { throw "TRX counter 'passed' is $passed but $($counts.Passed) results carry it: $TrxPath" }
     if ($failed -ne $counts.Failed) { throw "TRX counter 'failed' is $failed but $($counts.Failed) results carry it: $TrxPath" }
     if ($total -ne @($State.Results).Count) { throw "TRX total is $total but $(@($State.Results).Count) results are listed: $TrxPath" }
+    if ($total -ne $ExpectedTotal) { throw "TRX contains $total results but exactly $ExpectedTotal are pinned for this release: $TrxPath" }
     if ($executed -ne $passed + $failed) { throw "TRX executed count $executed does not equal passed+failed ($($passed + $failed)): $TrxPath" }
-    if ($total -lt $MinimumTotal) { throw "TRX contains fewer than the expected at least $MinimumTotal results: $TrxPath" }
     return @($State.Results | Where-Object { $_.Outcome -ne 'Passed' -and $_.Outcome -ne 'NotExecuted' } | ForEach-Object { $_.Name })
 }
 
@@ -255,6 +256,9 @@ $AllowedContainerFailures = @(
 # Each supported release tag must resolve to its recorded upstream commit; a moved tag is a provenance failure.
 $ExpectedUpstreamCommits = @{ 'v7.0.0' = 'b8977d6f88e7b68e000bac226a2814f236770570' }
 
+# Exact per-tag E2E result counts from the pinned release runs; an unexpected count breaks the build loudly.
+$ExpectedTestCounts = @{ 'v7.0.0' = @{ BurnE2E = 185; MsiE2E = 53; WixE2ETests = 8 } }
+
 if ($MyInvocation.InvocationName -eq '.') { return }
 $version = Get-InternalVersion $Tag
 if ($env:OS -ne 'Windows_NT') { throw 'WiX native build requires Windows' }
@@ -310,28 +314,35 @@ try {
     }
     Invoke-Upstream @('call src\setup\setup.cmd release')
     Start-TestServices
+    if (-not $ExpectedTestCounts.ContainsKey($Tag)) { throw "No pinned test result counts for $Tag" }
+    $counts = $ExpectedTestCounts[$Tag]
     $testExit = Invoke-UpstreamResult @('call src\test\test.cmd release')
     $results = Join-Path $source 'build\logs\TestResults'
+    $burnTrx = Join-Path $results 'WixToolsetTest.BurnE2E.trx'
+    $msiTrx = Join-Path $results 'WixToolsetTest.MsiE2E.trx'
     if ($testExit -ne 0) {
         # Windows containers cannot start the Windows Firewall and 'Server' services, so the MsiE2E fixtures
         # that need them are allowed to fail; any other failure still breaks the build (docs/container-test-notes.md).
-        $burnTrx = Join-Path $results 'WixToolsetTest.BurnE2E.trx'
         if (-not (Test-Path $burnTrx)) { throw 'Burn E2E results missing after the test chain aborted' }
-        $burnFailed = @(Assert-TrxConsistent (Get-TrxState $burnTrx) $burnTrx 100)
+        $burnFailed = @(Assert-TrxConsistent (Get-TrxState $burnTrx) $burnTrx $counts.BurnE2E @('Completed'))
         if ($burnFailed.Count) { throw "Burn E2E failures are not container-limited: $($burnFailed -join '; ')" }
-        $msiTrx = Join-Path $results 'WixToolsetTest.MsiE2E.trx'
         if (-not (Test-Path $msiTrx)) { throw 'MSI E2E results missing; the chain aborted before the container-limited stage' }
-        $msiFailed = @(Assert-TrxConsistent (Get-TrxState $msiTrx) $msiTrx 40)
+        $msiFailed = @(Assert-TrxConsistent (Get-TrxState $msiTrx) $msiTrx $counts.MsiE2E @('Failed','Completed'))
         if (-not $msiFailed.Count) { throw 'The test chain failed outside the container-limited MsiE2E stage; refusing to continue' }
         $unexpected = @($msiFailed | Where-Object { $_ -notin $AllowedContainerFailures })
         if ($unexpected.Count) { throw "Unexpected MSI E2E failures: $($unexpected -join '; ')" }
         # The upstream chain aborts at the MSI stage, so the tail suite has not run yet; this is its first run, not a retry.
-        $wixLog = Join-Path $results 'WixToolsetTest.WixE2ETests.trx'
-        Invoke-Upstream @('cd /d src\test', "dotnet test wix -c Release --nologo -l `"trx;LogFileName=$wixLog`"")
+        $wixTrx = Join-Path $results 'WixToolsetTest.WixE2ETests.trx'
+        Invoke-Upstream @('cd /d src\test', "dotnet test wix -c Release --nologo -l `"trx;LogFileName=$wixTrx`"")
+        $wixFailed = @(Assert-TrxConsistent (Get-TrxState $wixTrx) $wixTrx $counts.WixE2ETests @('Completed'))
+        if ($wixFailed.Count) { throw "WixE2E failures are not container-limited: $($wixFailed -join '; ')" }
     } else {
-        foreach ($name in @('WixToolsetTest.BurnE2E.trx','WixToolsetTest.MsiE2E.trx')) {
-            if (-not (Test-Path (Join-Path $results $name))) { throw "Missing test results for a green test chain: $name" }
-        }
+        # A fully green chain is only accepted with its complete, consistent, failure-free result sets.
+        foreach ($trx in @($burnTrx,$msiTrx)) { if (-not (Test-Path $trx)) { throw "Missing test results for a green test chain: $trx" } }
+        $burnFailed = @(Assert-TrxConsistent (Get-TrxState $burnTrx) $burnTrx $counts.BurnE2E @('Completed'))
+        if ($burnFailed.Count) { throw "Burn E2E failures: $($burnFailed -join '; ')" }
+        $msiFailed = @(Assert-TrxConsistent (Get-TrxState $msiTrx) $msiTrx $counts.MsiE2E @('Completed'))
+        if ($msiFailed.Count) { throw "MSI E2E failures: $($msiFailed -join '; ')" }
     }
     Invoke-Upstream @('call src\internal\finalize.cmd release')
     $artifacts=Join-Path $source 'build/artifacts'

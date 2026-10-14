@@ -127,28 +127,33 @@ if (-not $build.Contains('--untracked-files=all')) { throw 'Build-Wix must guard
 if (-not $build.Contains('$ExpectedUpstreamCommits')) { throw 'Build-Wix must pin each release tag to its recorded upstream commit' }
 if (-not $build.Contains('b8977d6f88e7b68e000bac226a2814f236770570')) { throw 'The v7.0.0 upstream commit pin is missing from Build-Wix' }
 if (-not $build.Contains('Get-FileHash $symbol')) { throw 'Manifest symbol packages need their own hash for publication verification' }
+if (-not $build.Contains('$ExpectedTestCounts')) { throw 'Build-Wix must pin the exact expected E2E result counts per release' }
+if (-not $build.Contains('WixE2E failures are not container-limited')) { throw 'Build-Wix must validate the WixE2E tail TRX after the container-limited stage' }
 
-function New-TestTrx([string]$Path, [string]$Counters, [string]$Results) {
-    [IO.File]::WriteAllText($Path, '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><ResultSummary outcome="Failed"><Counters ' + $Counters + ' /></ResultSummary><Results>' + $Results + '</Results></TestRun>')
+function New-TestTrx([string]$Path, [string]$Counters, [string]$Results, [string]$Outcome = 'Failed') {
+    [IO.File]::WriteAllText($Path, '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><ResultSummary outcome="' + $Outcome + '"><Counters ' + $Counters + ' /></ResultSummary><Results>' + $Results + '</Results></TestRun>')
 }
 $trx=Join-Path ([IO.Path]::GetTempPath()) ('wix-allowlist-' + [Guid]::NewGuid().ToString('N') + '.trx')
 try {
-    # Real semantics: skipped tests are NotExecuted nodes while counters.notExecuted is 0 (skipped = total - executed).
-    New-TestTrx $trx 'total="3" executed="2" passed="1" failed="1" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Failed" /><UnitTestResult testName="A.C" outcome="Passed" /><UnitTestResult testName="A.D" outcome="NotExecuted" />'
-    $failed=@(Assert-TrxConsistent (Get-TrxState $trx) $trx 1)
+    # Real semantics: skipped tests are NotExecuted nodes while counters.notExecuted is 0; the exact pinned total and the expected summary outcome are enforced.
+    New-TestTrx $trx 'total="3" executed="2" passed="1" failed="1" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Failed" /><UnitTestResult testName="A.C" outcome="Passed" /><UnitTestResult testName="A.D" outcome="NotExecuted" />' 'Failed'
+    $failed=@(Assert-TrxConsistent (Get-TrxState $trx) $trx 3 @('Failed'))
     if ($failed.Count -ne 1 -or $failed[0] -ne 'A.B') { throw 'TRX failed-test extraction is wrong' }
     New-TestTrx $trx 'total="3" executed="3" passed="1" failed="2" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Failed" /><UnitTestResult testName="A.C" outcome="Passed" /><UnitTestResult testName="A.D" outcome="NotExecuted" />'
-    $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 1 | Out-Null } catch { $rejected=$_.Exception.Message -match 'counter' }
+    $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 3 @('Failed') | Out-Null } catch { $rejected=$_.Exception.Message -match 'counter' }
     if (-not $rejected) { throw 'TRX with summary counters that disagree with its results was accepted' }
     New-TestTrx $trx 'total="2" executed="1" passed="1" failed="0" error="0" timeout="0" aborted="1" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Passed" /><UnitTestResult testName="A.C" outcome="Aborted" />'
-    $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 1 | Out-Null } catch { $rejected=$true }
+    $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 2 @('Failed') | Out-Null } catch { $rejected=$true }
     if (-not $rejected) { throw 'TRX with an aborted test was accepted' }
     New-TestTrx $trx 'total="1" executed="1" passed="1" failed="0" error="1" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Passed" />'
-    $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 1 | Out-Null } catch { $rejected=$_.Exception.Message -match 'run-level' }
+    $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 1 @('Failed') | Out-Null } catch { $rejected=$_.Exception.Message -match 'run-level' }
     if (-not $rejected) { throw 'TRX with run-level errors was accepted' }
     New-TestTrx $trx 'total="1" executed="1" passed="1" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Passed" />'
-    $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 40 | Out-Null } catch { $rejected=$_.Exception.Message -match 'at least' }
-    if (-not $rejected) { throw 'TRX with fewer results than the expected minimum was accepted' }
+    $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 40 @('Failed') | Out-Null } catch { $rejected=$_.Exception.Message -match 'exactly' }
+    if (-not $rejected) { throw 'TRX whose result count differs from the pinned count was accepted' }
+    New-TestTrx $trx 'total="3" executed="2" passed="1" failed="1" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Failed" /><UnitTestResult testName="A.C" outcome="Passed" /><UnitTestResult testName="A.D" outcome="NotExecuted" />' 'Failed'
+    $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 3 @('Completed') | Out-Null } catch { $rejected=$_.Exception.Message -match 'summary outcome' }
+    if (-not $rejected) { throw 'TRX with an unexpected summary outcome was accepted' }
 } finally { Remove-Item $trx -Force }
 Write-Host 'PASS: TRX state/consistency validation rejects partial or unexpected results'
 
@@ -174,6 +179,7 @@ Write-Host 'PASS: Jenkins downloads are pinned to embedded hashes'
 # Per-build archives must not be able to retain stale packages from earlier runs.
 $jenkinsfile=(Get-Content (Join-Path $PSScriptRoot '../Jenkinsfile') -Raw)
 if (-not ($jenkinsfile.Contains('Get-ChildItem -LiteralPath $outDir') -and $jenkinsfile.Contains('Remove-Item -Recurse -Force'))) { throw 'The per-tag artifact directory must be cleared before each build so stale packages cannot be archived' }
+if (-not $jenkinsfile.Contains("(Get-Location) 'logs'")) { throw 'The persistent logs directory must be cleared at the start of every run so stale logs cannot be archived' }
 Write-Host 'PASS: the per-tag artifact directory is cleared before each build'
 
 # Documentation must describe the delivered pipeline, and process snapshots must not live in the repository.

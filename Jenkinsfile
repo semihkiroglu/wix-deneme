@@ -36,6 +36,11 @@ pipeline {
           } else {
             echo 'Using the existing workspace checkout.'
           }
+          // Each run archives only its own logs; clear the persistent logs directory up front.
+          powershell(script: '''
+$logDir = Join-Path (Get-Location) 'logs'
+if (Test-Path -LiteralPath $logDir) { Get-ChildItem -LiteralPath $logDir -Force | Remove-Item -Recurse -Force }
+''')
         }
       }
     }

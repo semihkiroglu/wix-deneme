@@ -144,13 +144,15 @@ function Assert-TrustedFeedEndpoint([string]$Url, [string]$FeedUrl, [string]$Pur
     try { $uri = [uri]$Url } catch { throw "$Purpose endpoint is not a valid URI: $Url" }
     $feed = [uri]$FeedUrl
     $loopback = @('127.0.0.1','::1','localhost')
-    $loopbackPair = $uri.Scheme -eq 'http' -and ($uri.Host -in $loopback) -and ($feed.Host -in $loopback)
+    $loopbackPair = $uri.Scheme -eq 'http' -and $feed.Scheme -eq 'http' -and ($uri.Host -in $loopback) -and ($feed.Host -in $loopback)
     if (-not $loopbackPair -and $uri.Scheme -ne 'https') { throw "$Purpose endpoint must be HTTPS: $Url" }
     if (-not $AllowSeparateHost -and ($uri.Host -ne $feed.Host -or $uri.Port -ne $feed.Port)) { throw "$Purpose endpoint '$Url' is outside the feed origin '$FeedUrl'" }
 }
 
 function Get-FeedResources {
     param([string]$FeedUrl, $Auth)
+    # The configured feed URL itself carries the Basic credential; require HTTPS (loopback HTTP for the local test feed only).
+    Assert-TrustedFeedEndpoint -Url $FeedUrl -FeedUrl $FeedUrl -Purpose 'Feed service index'
     $result = Send-FeedRequest -Method 'GET' -Uri $FeedUrl -Auth $Auth -ReadText
     if ($result.Status -eq 401) {
         throw "Feed service index $FeedUrl requires authentication (HTTP 401). Configure a Basic credential via -FeedUser/-FeedPassword or WIX_FEED_USER/WIX_FEED_PASSWORD; no credentials are embedded in this repository."
@@ -303,6 +305,7 @@ function Publish-WixManifest {
     if (-not $WorkDir) { $WorkDir = [System.IO.Path]::GetTempPath() }
     $symbolServer = Get-Trimmed $SymbolServerUrl
     if (-not $symbolServer -and $endpoints.SymbolServerBase) { $symbolServer = $endpoints.SymbolServerBase }
+    if ($symbolServer) { Assert-TrustedFeedEndpoint -Url $symbolServer -FeedUrl $FeedUrl -Purpose 'Symbol server (-SymbolServerUrl)' -AllowSeparateHost }
     $summary = @()
     foreach ($package in $manifest.PublicPackages) {
         $packageStatus = 'pushed'
@@ -327,7 +330,13 @@ function Publish-WixManifest {
             $symbolStatus = 'pushed'
             foreach ($symbol in $package.Symbols) {
                 $code = Publish-FeedFile -Endpoints $endpoints -FilePath $symbol.FullPath -Kind 'Symbol' -ApiKey $ApiKey -Auth $Auth
-                if ($code -eq 409 -and $symbolStatus -eq 'pushed') { $symbolStatus = 'exists' }
+                if ($code -eq 409) {
+                    # A conflicting symbol package is only acceptable when the conflict can be verified: the
+                    # debug-key PDB readback below must confirm the remote symbols; without a symbol server
+                    # endpoint the remote bytes cannot be checked, so the conflict becomes a failure.
+                    if (-not $symbolServer) { throw "Symbol push for $($symbol.File) reported a conflict (HTTP 409) and no symbol server endpoint is available to verify the remote package" }
+                    if ($symbolStatus -eq 'pushed') { $symbolStatus = 'exists' }
+                }
                 if ($symbolServer) {
                     foreach ($pdb in @($symbol.Pdbs)) {
                         if (-not $pdb) { continue }

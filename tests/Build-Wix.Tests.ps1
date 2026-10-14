@@ -13,17 +13,27 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ('wix-template-' + [Guid]::NewGuid(
 $folder = Join-Path $root 'src/internal/SetBuildNumber'
 New-Item -ItemType Directory -Force $folder | Out-Null
 try {
-    [IO.File]::WriteAllText((Join-Path $folder 'SomeVerInfo.props.pp'), '<Project><PackageVersion>{major}.{minor}.{patch}{dashlabel}</PackageVersion></Project>')
-    [IO.File]::WriteAllText((Join-Path $folder 'Directory.Packages.props.pp'), '<PackageVersion Include="X" Version="{packageversion}" />')
-    [IO.File]::WriteAllText((Join-Path $folder 'global.json.pp'), '{"msbuild-sdks":{"WixToolset.Sdk":"{packageversion}"}}')
+    # Counts mirror the pinned v7.0.0 templates (1 / 33 / 1 matches); Set-InternalVersionTemplates enforces them.
+    $props = '<Project><PackageVersion>{major}.{minor}.{patch}{dashlabel}</PackageVersion></Project>'
+    $packages = '<Project>' + ((1..33 | ForEach-Object { "<PackageVersion Include=`"P$_`" Version=`"{packageversion}`" />" }) -join '') + '</Project>'
+    $sdkJson = '{"msbuild-sdks":{"WixToolset.Sdk":"{packageversion}"}}'
+    [IO.File]::WriteAllText((Join-Path $folder 'SomeVerInfo.props.pp'), $props)
+    [IO.File]::WriteAllText((Join-Path $folder 'Directory.Packages.props.pp'), $packages)
+    [IO.File]::WriteAllText((Join-Path $folder 'global.json.pp'), $sdkJson)
     Set-InternalVersionTemplates $root
     if ([IO.File]::ReadAllText((Join-Path $folder 'SomeVerInfo.props.pp')) -notmatch '\{patch\}\.1') { throw 'Package template unchanged' }
     if ([IO.File]::ReadAllText((Join-Path $folder 'Directory.Packages.props.pp')) -notmatch '\{packageversion\}\.1') { throw 'Dependency template unchanged' }
     if ([IO.File]::ReadAllText((Join-Path $folder 'global.json.pp')) -notmatch '\{packageversion\}\.1') { throw 'SDK template unchanged' }
+    $replaced = @([regex]::Matches([IO.File]::ReadAllText((Join-Path $folder 'Directory.Packages.props.pp')), 'Version="\{packageversion\}\.1"')).Count
+    if ($replaced -ne 33) { throw "Dependency template replaced $replaced of 33 occurrences" }
     [IO.File]::WriteAllText((Join-Path $folder 'SomeVerInfo.props.pp'), '<Project>unrecognized upstream template</Project>')
     $rejected = $false
     try { Set-InternalVersionTemplates $root } catch { $rejected = $true }
     if (-not $rejected) { throw 'Changed upstream template silently accepted' }
+    [IO.File]::WriteAllText((Join-Path $folder 'SomeVerInfo.props.pp'), ($props + '<Extra><PackageVersion>{major}.{minor}.{patch}{dashlabel}</PackageVersion></Extra>'))
+    $rejected = $false
+    try { Set-InternalVersionTemplates $root } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Template with an unexpected occurrence count was silently accepted' }
 } finally { Remove-Item $root -Recurse -Force }
 Write-Host 'PASS: stable 7+ tags, rejection boundaries, exact three version replacements and incompatible-template rejection'
 
@@ -111,8 +121,65 @@ Write-Host 'PASS: the environment installs and verifies ATL for the upstream nat
 if (-not $build.Contains('$AllowedContainerFailures')) { throw 'Build-Wix must carry the verified container-limited failure list' }
 if (-not $build.Contains('WixToolsetTest.MsiE2E.trx')) { throw 'Build-Wix must check the MsiE2E results against the allowlist' }
 if (-not (Test-Path (Join-Path $PSScriptRoot '../docs/container-test-notes.md'))) { throw 'Container test limitation notes missing' }
+if (-not $build.Contains('Assert-TrxConsistent')) { throw 'Build-Wix must validate TRX completeness/consistency, not just Failed nodes' }
+if (-not $build.Contains('outside the container-limited')) { throw 'Build-Wix must refuse test chain failures outside the container-limited stage' }
+if (-not $build.Contains('--untracked-files=all')) { throw 'Build-Wix must guard untracked files in the upstream checkout' }
+if (-not $build.Contains('$ExpectedUpstreamCommits')) { throw 'Build-Wix must pin each release tag to its recorded upstream commit' }
+if (-not $build.Contains('b8977d6f88e7b68e000bac226a2814f236770570')) { throw 'The v7.0.0 upstream commit pin is missing from Build-Wix' }
+if (-not $build.Contains('Get-FileHash $symbol')) { throw 'Manifest symbol packages need their own hash for publication verification' }
+
+function New-TestTrx([string]$Path, [string]$Counters, [string]$Results) {
+    [IO.File]::WriteAllText($Path, '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><ResultSummary outcome="Failed"><Counters ' + $Counters + ' /></ResultSummary><Results>' + $Results + '</Results></TestRun>')
+}
 $trx=Join-Path ([IO.Path]::GetTempPath()) ('wix-allowlist-' + [Guid]::NewGuid().ToString('N') + '.trx')
-[IO.File]::WriteAllText($trx,'<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><Results><UnitTestResult testName="A.B" outcome="Failed" /><UnitTestResult testName="A.C" outcome="Passed" /><UnitTestResult testName="A.D" outcome="NotExecuted" /></Results></TestRun>')
-try { $failed=@(Get-TrxFailedTests $trx) } finally { Remove-Item $trx -Force }
-if ($failed.Count -ne 1 -or $failed[0] -ne 'A.B') { throw 'TRX failed-test extraction is wrong' }
-Write-Host 'PASS: container-limited MsiE2E allowlist, TRX verification and limitation notes are in place'
+try {
+    New-TestTrx $trx 'total="3" executed="2" passed="1" failed="1" error="0" timeout="0" aborted="0" inconclusive="0" notExecuted="1"' '<UnitTestResult testName="A.B" outcome="Failed" /><UnitTestResult testName="A.C" outcome="Passed" /><UnitTestResult testName="A.D" outcome="NotExecuted" />'
+    $failed=@(Assert-TrxConsistent (Get-TrxState $trx) $trx 1)
+    if ($failed.Count -ne 1 -or $failed[0] -ne 'A.B') { throw 'TRX failed-test extraction is wrong' }
+    New-TestTrx $trx 'total="3" executed="2" passed="1" failed="2" error="0" timeout="0" aborted="0" inconclusive="0" notExecuted="1"' '<UnitTestResult testName="A.B" outcome="Failed" /><UnitTestResult testName="A.C" outcome="Passed" /><UnitTestResult testName="A.D" outcome="NotExecuted" />'
+    $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 1 | Out-Null } catch { $rejected=$_.Exception.Message -match 'counter' }
+    if (-not $rejected) { throw 'TRX with summary counters that disagree with its results was accepted' }
+    New-TestTrx $trx 'total="2" executed="2" passed="1" failed="0" error="0" timeout="0" aborted="1" inconclusive="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Passed" /><UnitTestResult testName="A.C" outcome="Aborted" />'
+    $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 1 | Out-Null } catch { $rejected=$true }
+    if (-not $rejected) { throw 'TRX with an aborted test was accepted' }
+    New-TestTrx $trx 'total="1" executed="1" passed="0" failed="0" error="1" timeout="0" aborted="0" inconclusive="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Passed" />'
+    $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 1 | Out-Null } catch { $rejected=$_.Exception.Message -match 'run-level' }
+    if (-not $rejected) { throw 'TRX with run-level errors was accepted' }
+    New-TestTrx $trx 'total="1" executed="1" passed="1" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" notExecuted="0"' '<UnitTestResult testName="A.B" outcome="Passed" />'
+    $rejected=$false; try { Assert-TrxConsistent (Get-TrxState $trx) $trx 40 | Out-Null } catch { $rejected=$_.Exception.Message -match 'at least' }
+    if (-not $rejected) { throw 'TRX with fewer results than the expected minimum was accepted' }
+} finally { Remove-Item $trx -Force }
+Write-Host 'PASS: TRX state/consistency validation rejects partial or unexpected results'
+
+# Toolchain payloads must be hash-pinned (Install-BuildEnv.ps1 constants + -Sha256 verification).
+foreach ($pin in @(
+    '62d8e57ac5ccd56eabd627c9de2cafe4dc463f9db520a72673ed08b1e83c48b7',
+    'e8b873e18a81e5c4cd8ab69d84dac8fead291d50b3c44633cd7fddad709a13d6',
+    '02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c860',
+    'd4bf83d6a860ccae9af44e508e1e00a39f09db6fa78a9ba5543b94d87ca22a29',
+    '992d70cac5b06c38efec91806caba64cdcc07e6d963a0959dbbbaf264d33b800'
+)) { if (-not $envScript.Contains($pin)) { throw "Install-BuildEnv is missing a pinned payload hash: $pin" } }
+if (@([regex]::Matches($envScript, 'Get-PinnedFile \S+ \S+ -Sha256')).Count -lt 5) { throw 'All toolchain payload downloads must pass -Sha256' }
+Write-Host 'PASS: the toolchain payloads are hash-pinned'
+
+# The smoke harness must not verify downloads against sidecar checksums fetched from the same source.
+$smoke=(Get-Content (Join-Path $PSScriptRoot 'JenkinsSmoke.ps1') -Raw)
+foreach ($pin in @('393bf2476352dd726519fd1f92ce66eac7d23c0936e6967420b717060c4c40d0','a86853ec2e2933f37a4b471ba65099b61e03c87a80c2ef8fe2315eb135672d43')) {
+    if (-not $smoke.Contains($pin)) { throw "JenkinsSmoke is missing a pinned download hash: $pin" }
+}
+if ($smoke.Contains('$war.sha256') -or $smoke.Contains('$manager.sha256')) { throw 'JenkinsSmoke must not rely on sidecar checksum files from the same remote' }
+Write-Host 'PASS: Jenkins downloads are pinned to embedded hashes'
+
+# Per-build archives must not be able to retain stale packages from earlier runs.
+$jenkinsfile=(Get-Content (Join-Path $PSScriptRoot '../Jenkinsfile') -Raw)
+if (-not ($jenkinsfile.Contains('Get-ChildItem -LiteralPath $outDir') -and $jenkinsfile.Contains('Remove-Item -Recurse -Force'))) { throw 'The per-tag artifact directory must be cleared before each build so stale packages cannot be archived' }
+Write-Host 'PASS: the per-tag artifact directory is cleared before each build'
+
+# Documentation must describe the delivered pipeline, and process snapshots must not live in the repository.
+$readme=(Get-Content (Join-Path $PSScriptRoot '../README.md') -Raw)
+if (-not ($readme.Contains('v7.0.0') -and $readme.Contains('Jenkins'))) { throw 'README must describe the WiX 7 Jenkins pipeline' }
+if ($readme.Contains('6.0.2')) { throw 'README still describes the WiX 6.0.2 Actions build' }
+foreach ($residue in @('progress.json','result.md','telegram-summary.txt')) {
+    if (Test-Path (Join-Path $PSScriptRoot "../$residue")) { throw "Process residue must not live in the repository: $residue" }
+}
+Write-Host 'PASS: README matches the delivered pipeline and no process residue is committed'

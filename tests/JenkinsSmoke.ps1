@@ -12,16 +12,15 @@ foreach ($file in @('Jenkinsfile','Dockerfile','.dockerignore','Install-BuildEnv
 }
 $war=Join-Path $jenkinsHome 'jenkins.war'
 $version='2.580.1'
+# Pinned hashes of the immutable release artifacts; sidecar checksum files fetched from the same remote prove nothing.
+$WarSha256='393bf2476352dd726519fd1f92ce66eac7d23c0936e6967420b717060c4c40d0'
 $url="https://get.jenkins.io/war-stable/$version/jenkins.war"
 Invoke-WebRequest $url -OutFile $war
-Invoke-WebRequest "$url.sha256" -OutFile "$war.sha256"
-$expected=(Get-Content "$war.sha256" -Raw).Trim().Split(' ')[0]
-if ((Get-FileHash $war -Algorithm SHA256).Hash -ne $expected) { throw 'Jenkins WAR checksum mismatch' }
+if ((Get-FileHash $war -Algorithm SHA256).Hash -ne $WarSha256) { throw 'Jenkins WAR checksum mismatch' }
 $manager=Join-Path $jenkinsHome 'jenkins-plugin-manager.jar'
+$ManagerSha256='a86853ec2e2933f37a4b471ba65099b61e03c87a80c2ef8fe2315eb135672d43'
 Invoke-WebRequest 'https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/2.15.0/jenkins-plugin-manager-2.15.0.jar' -OutFile $manager
-Invoke-WebRequest 'https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/2.15.0/jenkins-plugin-manager-2.15.0.jar.sha256' -OutFile "$manager.sha256"
-$managerSha=(Get-Content "$manager.sha256" -Raw).Trim().Split(' ')[0]
-if ((Get-FileHash $manager -Algorithm SHA256).Hash -ne $managerSha) { throw 'Plugin manager checksum mismatch' }
+if ((Get-FileHash $manager -Algorithm SHA256).Hash -ne $ManagerSha256) { throw 'Plugin manager checksum mismatch' }
 & java -jar $manager --war $war --plugin-download-directory (Join-Path $jenkinsHome 'plugins') --plugins pipeline-model-definition workflow-durable-task-step workflow-basic-steps workflow-job workflow-cps git credentials-binding
 if ($LASTEXITCODE -ne 0) { throw 'Jenkins pipeline plugin installation failed' }
 $groovy=@'

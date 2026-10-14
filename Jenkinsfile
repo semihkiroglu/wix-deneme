@@ -97,6 +97,7 @@ elseif ($build -ge 26100) { $base = 'mcr.microsoft.com/windows/server:ltsc2025' 
 elseif ($build -ge 20348) { $base = 'mcr.microsoft.com/windows/server:ltsc2022' }
 else { throw "No supported Windows container base image for Windows build $build" }
 $outDir = Join-Path $ws ('artifacts\\' + $tag)
+if (Test-Path -LiteralPath $outDir) { Get-ChildItem -LiteralPath $outDir -Force | Remove-Item -Recurse -Force }
 $logDir = Join-Path $ws 'logs'
 New-Item -ItemType Directory -Force -Path $outDir, $logDir | Out-Null
 Write-Host "Windows host build $build -> $base"

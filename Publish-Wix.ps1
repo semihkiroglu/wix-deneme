@@ -61,7 +61,10 @@ function Get-FeedHttpClient {
             [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
             [System.Net.ServicePointManager]::Expect100Continue = $false
         }
-        $client = New-Object System.Net.Http.HttpClient
+        $handler = New-Object System.Net.Http.HttpClientHandler
+        # Feed credentials (X-NuGet-ApiKey / Basic) must never follow a redirect to another origin.
+        $handler.AllowAutoRedirect = $false
+        $client = New-Object System.Net.Http.HttpClient -ArgumentList $handler
         $client.Timeout = [TimeSpan]::FromMinutes(30)
         $script:FeedHttpClient = $client
     }
@@ -133,6 +136,19 @@ function Get-Sha256Hex([string]$Path) {
     return ([System.BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
 }
 
+function Assert-TrustedFeedEndpoint([string]$Url, [string]$FeedUrl, [string]$Purpose, [switch]$AllowSeparateHost) {
+    # Feed credentials go to these endpoints verbatim; a compromised service index must not be able to point
+    # them at another origin. Loopback HTTP is allowed for the local test feed only.
+    if (-not $Url) { return }
+    $uri = $null
+    try { $uri = [uri]$Url } catch { throw "$Purpose endpoint is not a valid URI: $Url" }
+    $feed = [uri]$FeedUrl
+    $loopback = @('127.0.0.1','::1','localhost')
+    $loopbackPair = $uri.Scheme -eq 'http' -and ($uri.Host -in $loopback) -and ($feed.Host -in $loopback)
+    if (-not $loopbackPair -and $uri.Scheme -ne 'https') { throw "$Purpose endpoint must be HTTPS: $Url" }
+    if (-not $AllowSeparateHost -and ($uri.Host -ne $feed.Host -or $uri.Port -ne $feed.Port)) { throw "$Purpose endpoint '$Url' is outside the feed origin '$FeedUrl'" }
+}
+
 function Get-FeedResources {
     param([string]$FeedUrl, $Auth)
     $result = Send-FeedRequest -Method 'GET' -Uri $FeedUrl -Auth $Auth -ReadText
@@ -161,6 +177,10 @@ function Get-FeedResources {
         if ($type -match '^(?i)(SymbolServer|SymbolPackageDownload)/') { $symbolServer = $byType[$type]; break }
     }
     if ($symbolServer) { $symbolServer = $symbolServer.TrimEnd('/') }
+    Assert-TrustedFeedEndpoint -Url $publish -FeedUrl $FeedUrl -Purpose 'PackagePublish'
+    Assert-TrustedFeedEndpoint -Url $flatContainer -FeedUrl $FeedUrl -Purpose 'PackageBaseAddress'
+    Assert-TrustedFeedEndpoint -Url $symbolPublish -FeedUrl $FeedUrl -Purpose 'SymbolPackagePublish'
+    Assert-TrustedFeedEndpoint -Url $symbolServer -FeedUrl $FeedUrl -Purpose 'SymbolServerBase' -AllowSeparateHost
     return [pscustomobject]@{
         FeedUrl              = $FeedUrl
         PackagePublish       = $publish
@@ -252,6 +272,10 @@ function Assert-WixManifest {
             if (-not $symbolFile) { continue }
             $symbolFull = Join-Path $dir $symbolFile
             if (-not (Test-Path -LiteralPath $symbolFull)) { throw "Symbol package '$symbolFile' for '$id' not found in $dir" }
+            $symbolSha = [string]$symbol.sha256
+            if (-not $symbolSha) { throw "Symbol package '$symbolFile' for '$id' has no sha256 in the manifest; rebuild the release manifest" }
+            $actualSymbol = Get-Sha256Hex $symbolFull
+            if ($actualSymbol -ne $symbolSha.ToLowerInvariant()) { throw "Symbol package hash mismatch for '$symbolFile': manifest $symbolSha, file $actualSymbol" }
             $symbols += [pscustomobject]@{ File = $symbolFile; FullPath = $symbolFull; Pdbs = @($symbol.pdbs) }
         }
         $public += [pscustomobject]@{ Id = $id; Version = $version; File = $file; FullPath = $full; Sha256 = $actual; Symbols = $symbols }

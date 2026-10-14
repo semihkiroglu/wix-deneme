@@ -445,7 +445,7 @@ $cliNupkg = New-TestPackage -Dir $goodDir -Id 'wix' -Version '7.0.0.1'
 $internalNupkg = New-TestPackage -Dir $goodDir -Id 'WixInternal.Contracts' -Version '7.0.0.1'
 $coreNupkg = New-TestPackage -Dir $goodDir -Id 'WixToolset.Core' -Version '7.0.0.1'
 New-TestManifest -Dir $goodDir -Tag 'v7.0.0' -Version '7.0.0.1' -Packages @(
-  [pscustomobject]@{ id = 'WixToolset.Sdk'; file = 'WixToolset.Sdk.7.0.0.1.nupkg'; sha256 = (Get-FileShaHex $sdkNupkg); public = $true; symbols = @([pscustomobject]@{ file = 'WixToolset.Sdk.7.0.0.1.snupkg'; pdbs = @([pscustomobject]@{ name = 'WixToolset.Sdk.pdb'; key = 'aabbccdd'; sha256 = ('d' * 64) }) }) },
+  [pscustomobject]@{ id = 'WixToolset.Sdk'; file = 'WixToolset.Sdk.7.0.0.1.nupkg'; sha256 = (Get-FileShaHex $sdkNupkg); public = $true; symbols = @([pscustomobject]@{ file = 'WixToolset.Sdk.7.0.0.1.snupkg'; sha256 = (Get-FileShaHex $sdkSnupkg); pdbs = @([pscustomobject]@{ name = 'WixToolset.Sdk.pdb'; key = 'aabbccdd'; sha256 = ('d' * 64) }) }) },
   [pscustomobject]@{ id = 'wix'; file = 'wix.7.0.0.1.nupkg'; sha256 = (Get-FileShaHex $cliNupkg); public = $true; symbols = @() },
   [pscustomobject]@{ id = 'WixInternal.Contracts'; file = 'WixInternal.Contracts.7.0.0.1.nupkg'; sha256 = (Get-FileShaHex $internalNupkg); public = $false; symbols = @() },
   [pscustomobject]@{ id = 'WixToolset.Core'; file = 'WixToolset.Core.7.0.0.1.nupkg'; sha256 = (Get-FileShaHex $coreNupkg); public = $false; symbols = @() }
@@ -666,6 +666,62 @@ try {
   $env:NUGET_API_KEY = $null
   Stop-MockFeed $feed
 }
+
+Write-Host ''
+Write-Host '== publish: symbol integrity and endpoint trust =='
+
+# Symbol package bytes must match the manifest hash before anything is pushed.
+$symDir = Join-Path $script:Work 'sym-tamper'
+$symNupkg = New-TestPackage -Dir $symDir -Id 'WixToolset.Sdk' -Version '7.0.0.1'
+$symSnupkg = New-TestPackage -Dir $symDir -Id 'WixToolset.Sdk' -Version '7.0.0.1' -Kind 'snupkg'
+New-TestManifest -Dir $symDir -Tag 'v7.0.0' -Version '7.0.0.1' -Packages @(
+  [pscustomobject]@{ id = 'WixToolset.Sdk'; file = 'WixToolset.Sdk.7.0.0.1.nupkg'; sha256 = (Get-FileShaHex $symNupkg); public = $true; symbols = @([pscustomobject]@{ file = 'WixToolset.Sdk.7.0.0.1.snupkg'; sha256 = ('f' * 64); pdbs = @([pscustomobject]@{ name = 'WixToolset.Sdk.pdb'; key = 'aabbccdd'; sha256 = ('d' * 64) }) }) }
+)
+Assert-Throws { Assert-WixManifest -ManifestDir $symDir } 'hash' 'a symbol package whose bytes do not match the manifest hash is fatal'
+
+# The manifest must carry the symbol package hash at all (built before this rule was introduced = rebuild).
+$symDir2 = Join-Path $script:Work 'sym-nohash'
+$symNupkg2 = New-TestPackage -Dir $symDir2 -Id 'WixToolset.Sdk' -Version '7.0.0.1'
+$symSnupkg2 = New-TestPackage -Dir $symDir2 -Id 'WixToolset.Sdk' -Version '7.0.0.1' -Kind 'snupkg'
+New-TestManifest -Dir $symDir2 -Tag 'v7.0.0' -Version '7.0.0.1' -Packages @(
+  [pscustomobject]@{ id = 'WixToolset.Sdk'; file = 'WixToolset.Sdk.7.0.0.1.nupkg'; sha256 = (Get-FileShaHex $symNupkg2); public = $true; symbols = @([pscustomobject]@{ file = 'WixToolset.Sdk.7.0.0.1.snupkg'; pdbs = @() }) }
+)
+Assert-Throws { Assert-WixManifest -ManifestDir $symDir2 } 'sha256' 'a symbol entry without a manifest hash is fatal'
+
+# Feed-advertised endpoints outside the feed origin, or plain HTTP off loopback, must be refused before any push.
+$trustDir = Join-Path $script:Work 'trust'
+$trustNupkg = New-TestPackage -Dir $trustDir -Id 'WixToolset.Sdk' -Version '7.0.0.1'
+New-TestManifest -Dir $trustDir -Tag 'v7.0.0' -Version '7.0.0.1' -Packages @(
+  [pscustomobject]@{ id = 'WixToolset.Sdk'; file = 'WixToolset.Sdk.7.0.0.1.nupkg'; sha256 = (Get-FileShaHex $trustNupkg); public = $true; symbols = @() }
+)
+$crossPort = @(
+  [pscustomobject]@{ '@id' = 'http://127.0.0.1:1/v3-flatcontainer'; '@type' = @('PackageBaseAddress/3.0.0') },
+  [pscustomobject]@{ '@id' = 'http://127.0.0.1:1/custom/push/pkg'; '@type' = 'PackagePublish/2.0.0' }
+)
+$feed = Start-MockFeed -Options @{ ReleasesJson = $script:BasicReleases; IndexOverride = $crossPort }
+try {
+  Assert-Throws { Publish-WixManifest -ManifestDir $trustDir -FeedUrl $feed.IndexUrl -ApiKey 'k' } 'origin' 'a publish endpoint on another port is outside the feed origin and refused'
+  Assert-Equal 0 @(Get-PutLog $feed).Count 'no push attempted to an endpoint outside the feed origin'
+} finally { Stop-MockFeed $feed }
+
+$foreignHost = @(
+  [pscustomobject]@{ '@id' = 'http://127.0.0.1:1/v3-flatcontainer'; '@type' = @('PackageBaseAddress/3.0.0') },
+  [pscustomobject]@{ '@id' = 'https://evil.example/custom/push/pkg'; '@type' = 'PackagePublish/2.0.0' }
+)
+$feed = Start-MockFeed -Options @{ ReleasesJson = $script:BasicReleases; IndexOverride = $foreignHost }
+try {
+  Assert-Throws { Publish-WixManifest -ManifestDir $trustDir -FeedUrl $feed.IndexUrl -ApiKey 'k' } 'origin' 'a foreign-host publish endpoint is refused'
+  Assert-Equal 0 @(Get-PutLog $feed).Count 'no push attempted to a foreign-host endpoint'
+} finally { Stop-MockFeed $feed }
+
+$plainHttp = @(
+  [pscustomobject]@{ '@id' = 'http://127.0.0.1:1/v3-flatcontainer'; '@type' = @('PackageBaseAddress/3.0.0') },
+  [pscustomobject]@{ '@id' = 'http://evil.example/custom/push/pkg'; '@type' = 'PackagePublish/2.0.0' }
+)
+$feed = Start-MockFeed -Options @{ ReleasesJson = $script:BasicReleases; IndexOverride = $plainHttp }
+try {
+  Assert-Throws { Publish-WixManifest -ManifestDir $trustDir -FeedUrl $feed.IndexUrl -ApiKey 'k' } 'HTTPS' 'a non-HTTPS endpoint outside loopback is refused'
+} finally { Stop-MockFeed $feed }
 
 Write-Host ''
 if ($script:Failed -eq 0) {

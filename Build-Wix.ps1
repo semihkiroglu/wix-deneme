@@ -9,15 +9,18 @@ function Get-InternalVersion([string]$ReleaseTag) {
 }
 
 function Set-InternalVersionTemplates([string]$Root) {
+    # Count = the exact number of version tokens in the pinned upstream templates; a changed count means the
+    # upstream text moved, so the replacement must be re-verified instead of silently editing a different shape.
     $templates = @(
-        @{ File='SomeVerInfo.props.pp'; Find='<PackageVersion>\{major\}\.\{minor\}\.\{patch\}\{dashlabel\}</PackageVersion>'; Replace='<PackageVersion>{major}.{minor}.{patch}.1</PackageVersion>' },
-        @{ File='Directory.Packages.props.pp'; Find='Version="\{packageversion\}"'; Replace='Version="{packageversion}.1"' },
-        @{ File='global.json.pp'; Find='("WixToolset.Sdk"\s*:\s*")\{packageversion\}(?=")'; Replace='$1{packageversion}.1' }
+        @{ File='SomeVerInfo.props.pp'; Count=1; Find='<PackageVersion>\{major\}\.\{minor\}\.\{patch\}\{dashlabel\}</PackageVersion>'; Replace='<PackageVersion>{major}.{minor}.{patch}.1</PackageVersion>' },
+        @{ File='Directory.Packages.props.pp'; Count=33; Find='Version="\{packageversion\}"'; Replace='Version="{packageversion}.1"' },
+        @{ File='global.json.pp'; Count=1; Find='("WixToolset.Sdk"\s*:\s*")\{packageversion\}(?=")'; Replace='$1{packageversion}.1' }
     )
     $updates = foreach ($item in $templates) {
         $path = Join-Path $Root "src/internal/SetBuildNumber/$($item.File)"
         $text = [IO.File]::ReadAllText($path)
-        if (-not [regex]::IsMatch($text, $item.Find)) { throw "Unrecognized upstream version template: $path" }
+        $matches = [regex]::Matches($text, $item.Find).Count
+        if ($matches -ne $item.Count) { throw "Unexpected upstream version template: $path has $matches of $($item.Count) expected version tokens" }
         [pscustomobject]@{ Path=$path; Content=[regex]::Replace($text, $item.Find, $item.Replace) }
     }
     foreach ($update in $updates) { [IO.File]::WriteAllText($update.Path, $update.Content) }
@@ -44,11 +47,36 @@ function Invoke-UpstreamResult([string[]]$Commands) {
     try { & cmd.exe @('/d','/c',$batch); return $LASTEXITCODE } finally { Remove-Item $batch -Force }
 }
 
-function Get-TrxFailedTests([string]$TrxPath) {
+function Get-TrxState([string]$TrxPath) {
     $xml = New-Object System.Xml.XmlDocument
     $xml.Load($TrxPath)
     $namespace = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
-    foreach ($node in $xml.SelectNodes('//*[local-name()="UnitTestResult" and @outcome="Failed"]', $namespace)) { $node.GetAttribute('testName') }
+    $summary = $xml.SelectSingleNode('//*[local-name()="ResultSummary"]', $namespace)
+    if ($null -eq $summary) { throw "TRX has no result summary: $TrxPath" }
+    $counters = $summary.SelectSingleNode('*[local-name()="Counters"]', $namespace)
+    if ($null -eq $counters) { throw "TRX has no counters: $TrxPath" }
+    $results = @($xml.SelectNodes('//*[local-name()="UnitTestResult"]', $namespace) | ForEach-Object { [pscustomobject]@{ Name = $_.GetAttribute('testName'); Outcome = $_.GetAttribute('outcome') } })
+    [pscustomobject]@{ Counters = $counters; Results = $results }
+}
+
+function Assert-TrxConsistent($State, [string]$TrxPath, [int]$MinimumTotal) {
+    # A summary whose counters disagree with the individual results, a non-terminal outcome, or a run-level
+    # error marks a partial/aborted run; such a TRX never satisfies the container-limited allowlist.
+    $nonzero = @('error','timeout','aborted','inconclusive','notRunnable') | Where-Object { [int]$State.Counters.GetAttribute($_) -ne 0 }
+    if ($nonzero.Count) { throw "TRX reports run-level errors ($($nonzero -join ', ')): $TrxPath" }
+    $actual = @{}
+    foreach ($result in $State.Results) {
+        if ($result.Outcome -notin @('Passed','Failed','NotExecuted')) { throw "Unexpected test outcome '$($result.Outcome)' for '$($result.Name)': $TrxPath" }
+        $actual[$result.Outcome] = 1 + [int]($actual[$result.Outcome])
+    }
+    foreach ($pair in @(@('passed','Passed'), @('failed','Failed'), @('notExecuted','NotExecuted'))) {
+        $declared = [int]$State.Counters.GetAttribute($pair[0])
+        $found = [int]($actual[$pair[1]])
+        if ($declared -ne $found) { throw "TRX counter '$($pair[0])' is $declared but $found results carry it: $TrxPath" }
+    }
+    if ([int]$State.Counters.GetAttribute('total') -ne @($State.Results).Count) { throw "TRX total does not match its result count: $TrxPath" }
+    if (@($State.Results).Count -lt $MinimumTotal) { throw "TRX contains fewer than the expected at least $MinimumTotal results: $TrxPath" }
+    return @($State.Results | Where-Object { $_.Outcome -notin @('Passed','NotExecuted') } | ForEach-Object { $_.Name })
 }
 
 function Start-TestServices {
@@ -158,7 +186,7 @@ public static class PortableIdentity {
                     [pscustomobject]@{ name=$entry.Name; key=[PortableIdentity]::Read($bytes,$dll); sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)) }
                 }
                 if (-not @($pdbs).Count) { throw "Symbol package lacks PDBs: $symbol" }
-                $symbols=@([pscustomobject]@{ file=[IO.Path]::GetFileName($symbol); pdbs=@($pdbs) })
+                $symbols=@([pscustomobject]@{ file=[IO.Path]::GetFileName($symbol); sha256=(Get-FileHash $symbol -Algorithm SHA256).Hash; pdbs=@($pdbs) })
             } finally { $binaryZip.Dispose(); $symbolZip.Dispose() }
         }
         $public = $false
@@ -220,6 +248,9 @@ $AllowedContainerFailures = @(
     'WixToolsetTest.MsiE2E.ComPlusExtensionTests.CanInstallAndUninstallWithPartitions'
 )
 
+# Each supported release tag must resolve to its recorded upstream commit; a moved tag is a provenance failure.
+$ExpectedUpstreamCommits = @{ 'v7.0.0' = 'b8977d6f88e7b68e000bac226a2814f236770570' }
+
 if ($MyInvocation.InvocationName -eq '.') { return }
 $version = Get-InternalVersion $Tag
 if ($env:OS -ne 'Windows_NT') { throw 'WiX native build requires Windows' }
@@ -239,6 +270,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or $sha -notmatch '^[0-9a-f]{40}$') { throw 'Upstream revision unavailable' }
     $actualTag=(& git.exe describe --tags --exact-match).Trim()
     if ($LASTEXITCODE -ne 0 -or $actualTag -ne $Tag) { throw 'Upstream source is not the requested release tag' }
+    if (-not $ExpectedUpstreamCommits.ContainsKey($Tag) -or $sha -ne $ExpectedUpstreamCommits[$Tag]) { throw "Upstream $Tag resolved to $sha, which is not the pinned release commit" }
     Set-InternalVersionTemplates $source
     $env:RuntimeTestsEnabled='true'; $env:WixOfficialBuild='false'; $env:SignBuild='false'; $env:NUGET_XMLDOC_MODE='skip'
     $rsp=Join-Path (Split-Path $env:CTECH_MSBUILD) 'MSBuild.rsp'
@@ -275,20 +307,27 @@ try {
     Invoke-Upstream @('call src\setup\setup.cmd release')
     Start-TestServices
     $testExit = Invoke-UpstreamResult @('call src\test\test.cmd release')
+    $results = Join-Path $source 'build\logs\TestResults'
     if ($testExit -ne 0) {
         # Windows containers cannot start the Windows Firewall and 'Server' services, so the MsiE2E fixtures
         # that need them are allowed to fail; any other failure still breaks the build (docs/container-test-notes.md).
-        $results = Join-Path $source 'build\logs\TestResults'
         $burnTrx = Join-Path $results 'WixToolsetTest.BurnE2E.trx'
         if (-not (Test-Path $burnTrx)) { throw 'Burn E2E results missing after the test chain aborted' }
-        $burnFailures = @(Get-TrxFailedTests $burnTrx)
-        if ($burnFailures.Count) { throw "Burn E2E failures are not container-limited: $($burnFailures -join '; ')" }
+        $burnFailed = @(Assert-TrxConsistent (Get-TrxState $burnTrx) $burnTrx 100)
+        if ($burnFailed.Count) { throw "Burn E2E failures are not container-limited: $($burnFailed -join '; ')" }
         $msiTrx = Join-Path $results 'WixToolsetTest.MsiE2E.trx'
         if (-not (Test-Path $msiTrx)) { throw 'MSI E2E results missing; the chain aborted before the container-limited stage' }
-        $unexpected = @(Get-TrxFailedTests $msiTrx | Where-Object { $_ -notin $AllowedContainerFailures })
+        $msiFailed = @(Assert-TrxConsistent (Get-TrxState $msiTrx) $msiTrx 40)
+        if (-not $msiFailed.Count) { throw 'The test chain failed outside the container-limited MsiE2E stage; refusing to continue' }
+        $unexpected = @($msiFailed | Where-Object { $_ -notin $AllowedContainerFailures })
         if ($unexpected.Count) { throw "Unexpected MSI E2E failures: $($unexpected -join '; ')" }
+        # The upstream chain aborts at the MSI stage, so the tail suite has not run yet; this is its first run, not a retry.
         $wixLog = Join-Path $results 'WixToolsetTest.WixE2ETests.trx'
         Invoke-Upstream @('cd /d src\test', "dotnet test wix -c Release --nologo -l `"trx;LogFileName=$wixLog`"")
+    } else {
+        foreach ($name in @('WixToolsetTest.BurnE2E.trx','WixToolsetTest.MsiE2E.trx')) {
+            if (-not (Test-Path (Join-Path $results $name))) { throw "Missing test results for a green test chain: $name" }
+        }
     }
     Invoke-Upstream @('call src\internal\finalize.cmd release')
     $artifacts=Join-Path $source 'build/artifacts'
@@ -297,6 +336,14 @@ try {
     $allowed=@('src/internal/SetBuildNumber/SomeVerInfo.props.pp','src/internal/SetBuildNumber/Directory.Packages.props.pp','src/internal/SetBuildNumber/global.json.pp')
     $changed=@(& git.exe diff HEAD --name-only)
     if ($LASTEXITCODE -ne 0 -or @($changed | Where-Object { $_ -notin $allowed }).Count -or $changed.Count -ne 3) { throw 'Unexpected upstream source modification' }
+    # `git diff` never reports untracked paths, so the working tree is cross-checked too; only generated output may be untracked.
+    $status=@(& git.exe status --porcelain=v1 --untracked-files=all)
+    if ($LASTEXITCODE -ne 0) { throw 'Upstream working tree status unavailable' }
+    $foreign=@($status | Where-Object {
+        $path=$_.Substring(3).Trim('"')
+        if ($_ -match '^\?\? ') { $path -notmatch '^(build/|packages/|artifacts/)' } else { $path -notin $allowed }
+    })
+    if ($foreign.Count) { throw "Unexpected upstream working tree entries: $(($foreign | Select-Object -First 5) -join '; ')" }
     Invoke-Native 'git.exe' @('diff','--check')
     Copy-Item (Join-Path $artifacts '*') -Destination $Output -Force
     $additional=Join-Path $source 'build/setup/Release/WixAdditionalTools.exe'

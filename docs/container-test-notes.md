@@ -50,7 +50,10 @@ tamamen kaldırılabilir.
 
 ## Doğrulama mekanizması
 
-`Build-Wix.ps1` test fazında: zincir başarısız biterse (a) Burn TRX tamamen yeşil olmalı,
-(b) MsiE2E TRX'teki başarısız testler `$AllowedContainerFailures`'ın alt kümesi olmalı,
-(c) zincirin kalan adımı (`dotnet test wix` → WixE2ETests) ayrıca koşturulur ve yeşil
-olmalıdır. Aksi halde build hata verir.
+`Build-Wix.ps1` test fazında: zincir başarısız biterse (a) Burn TRX tam yeşil olmalı,
+(b) her iki TRX'in özet sayaçları tek tek sonuçlarıyla tutarlı olmalı (sayaç tutarsızlığı =
+yarım/abort koşu; beklenmeyen sonuç tipi veya koşu seviyesi hata build'i kırar) ve MsiE2E'deki
+başarısız testler `$AllowedContainerFailures`'ın alt kümesi olmalı, (c) istisna seti boşsa
+(zincir MsiE2E dışında patladıysa) build durur, (d) zincirin kalan adımı (`dotnet test wix` →
+WixE2ETests) koşturulur ve yeşil olmalıdır. MsiE2E bu aşamada her zaman patladığı için bu koşum
+ilk koşumdur, retry değildir. Aksi halde build hata verir.

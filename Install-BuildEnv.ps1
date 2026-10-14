@@ -17,9 +17,13 @@ $ProgressPreference = 'SilentlyContinue'
 $VsBootstrapperUrl = 'https://download.visualstudio.microsoft.com/download/pr/83ec5fa2-d38d-43d5-9f58-31ea8e1c66e4/62d8e57ac5ccd56eabd627c9de2cafe4dc463f9db520a72673ed08b1e83c48b7/vs_BuildTools.exe'
 $VsBootstrapperVersionPattern = '^17\.14\.29([+.]|$)'
 $VsBuildNumber = '17.14.37111.16'
+$VsBootstrapperSha256 = '62d8e57ac5ccd56eabd627c9de2cafe4dc463f9db520a72673ed08b1e83c48b7'
 $VsRoot = 'C:\BuildTools'
 
 $DotnetInstallUrl = 'https://dot.net/v1/dotnet-install.ps1'
+# shortcut: dotnet-install.ps1 is served from the live dot.net channel; a Microsoft update breaks this pin
+# loudly and deliberately — re-download, re-verify and bump the hash when the SDK set is intentionally moved.
+$DotnetInstallSha256 = 'e8b873e18a81e5c4cd8ab69d84dac8fead291d50b3c44633cd7fddad709a13d6'
 $Sdks = @('9.0.312', '8.0.419')
 $X86RuntimeVersion = '8.0.25'
 $DotnetRoot = 'C:\tools\dotnet'
@@ -27,10 +31,13 @@ $DotnetRootX86 = 'C:\tools\dotnet-x86'
 
 $PwshUrl = 'https://github.com/PowerShell/PowerShell/releases/download/v7.6.6/PowerShell-7.6.6-win-x64.zip'
 $PwshVersion = '7.6.6'
+$PwshSha256 = '02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c860'
 $MinGitUrl = 'https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.2/MinGit-2.53.0.2-64-bit.zip'
 $MinGitVersion = '2.53.0'
+$MinGitSha256 = 'd4bf83d6a860ccae9af44e508e1e00a39f09db6fa78a9ba5543b94d87ca22a29'
 $NuGetUrl = 'https://dist.nuget.org/win-x86-commandline/v7.9.0/nuget.exe'
 $NuGetVersion = '7.9.0'
+$NuGetSha256 = '992d70cac5b06c38efec91806caba64cdcc07e6d963a0959dbbbaf264d33b800'
 
 # Legacy MSTest reference payload, Microsoft.VisualStudio.TestTools.TestPlatform.Legacy.Common
 # from the VS 17 release channel manifest (payload URL and sha256 as published in
@@ -41,12 +48,14 @@ $LegacyCommonVsixSha256 = '5e45d0660f67ae22ae6307699bca214cea2a998ca8f534328f85b
 $LegacyMstestSha256 = 'deecfaf419f82cc0f8a97456e5e2c0114ba96853d5f5ab95544d269b4c5898ab'
 $LegacyMstestIdentity = 'Microsoft.VisualStudio.QualityTools.UnitTestFramework, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'
 
-function Get-PinnedFile([string]$Url, [string]$Path) {
+function Get-PinnedFile([string]$Url, [string]$Path, [string]$Sha256) {
     Write-Host "Downloading $Url"
     Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Path
     if (-not (Test-Path -LiteralPath $Path) -or (Get-Item -LiteralPath $Path).Length -eq 0) {
         throw "Download produced no file: $Url"
     }
+    $actual = Get-Sha256 $Path
+    if ($actual -ne $Sha256.ToLowerInvariant()) { throw "Download hash mismatch for $Url : expected $Sha256, got $actual" }
 }
 
 function Get-Sha256([string]$Path) {
@@ -80,7 +89,7 @@ if ($featureExit -notin @(0,3010) -or -not (Test-Path "$env:WINDIR\Microsoft.NET
 
 # --- Visual Studio Build Tools 17.14.29 -------------------------------------
 $bootstrapper = Join-Path $DownloadRoot 'vs_BuildTools_17.14.29.exe'
-Get-PinnedFile $VsBootstrapperUrl $bootstrapper
+Get-PinnedFile $VsBootstrapperUrl $bootstrapper -Sha256 $VsBootstrapperSha256
 $bootstrapperVersion = (Get-Item $bootstrapper).VersionInfo.ProductVersion
 if ($bootstrapperVersion -notmatch $VsBootstrapperVersionPattern) {
     throw "Unexpected Build Tools bootstrapper version: $bootstrapperVersion"
@@ -155,7 +164,7 @@ if ($selected.Count -ne 1 -or $selected[0] -ne $VsRoot) {
 # The image contains only these SDKs, so unlike the disposable GitHub runner no
 # preinstalled SDK hiding or VS InstallCleanup is needed (nor possible).
 $dotnetInstall = Join-Path $DownloadRoot 'dotnet-install.ps1'
-Get-PinnedFile $DotnetInstallUrl $dotnetInstall
+Get-PinnedFile $DotnetInstallUrl $dotnetInstall -Sha256 $DotnetInstallSha256
 foreach ($sdk in $Sdks) {
     & $dotnetInstall -Version $sdk -InstallDir $DotnetRoot -Architecture x64 -NoPath
 }
@@ -174,20 +183,20 @@ foreach ($runtime in @('Microsoft.NETCore.App 8.0.25', 'Microsoft.WindowsDesktop
 
 # --- PowerShell 7, git CLI, nuget.exe ---------------------------------------
 $pwshZip = Join-Path $DownloadRoot 'PowerShell-7.6.6-win-x64.zip'
-Get-PinnedFile $PwshUrl $pwshZip
+Get-PinnedFile $PwshUrl $pwshZip -Sha256 $PwshSha256
 Expand-Archive -LiteralPath $pwshZip -DestinationPath 'C:\tools\pwsh' -Force
 $pwshVersion = & 'C:\tools\pwsh\pwsh.exe' -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
 if ($pwshVersion -ne $PwshVersion) { throw "Unexpected PowerShell version: $pwshVersion" }
 
 $gitZip = Join-Path $DownloadRoot 'MinGit-2.53.0.2-64-bit.zip'
-Get-PinnedFile $MinGitUrl $gitZip
+Get-PinnedFile $MinGitUrl $gitZip -Sha256 $MinGitSha256
 Expand-Archive -LiteralPath $gitZip -DestinationPath 'C:\tools\git' -Force
 $gitVersion = & 'C:\tools\git\cmd\git.exe' --version
 if ($gitVersion -notmatch "\b$([regex]::Escape($MinGitVersion))\b") { throw "Unexpected git version: $gitVersion" }
 
 New-Item -ItemType Directory -Force -Path 'C:\tools\nuget' | Out-Null
 $nuget = 'C:\tools\nuget\nuget.exe'
-Get-PinnedFile $NuGetUrl $nuget
+Get-PinnedFile $NuGetUrl $nuget -Sha256 $NuGetSha256
 $nugetVersion = (Get-Item $nuget).VersionInfo.ProductVersion
 if ($nugetVersion -notlike "$NuGetVersion*") { throw "Unexpected nuget.exe version: $nugetVersion" }
 

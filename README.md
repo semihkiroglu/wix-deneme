@@ -1,27 +1,35 @@
-# WiX 6.0.2 internal build (temporary)
+# WiX iç paket üretimi (v7+, Jenkins + Windows Docker)
 
-Build **from upstream source tag `v6.0.2`**, without distributing an upstream binary release, and package as **`6.0.2-ctech`** on GitHub Actions `windows-2022`.
+Resmî `wixtoolset/wix` kaynak ağacından, **kaynak kod davranışı değiştirilmeden** (yalnız sürüm
+şablonlarında kontrollü değişiklik) kurum içi `.1` paketleri üretir. Derleme ve upstream test
+zinciri, Jenkins `windows1` agent'ında **Windows Docker container içinde** koşar; akış
+`Jenkinsfile` + `Build-Wix.ps1` içindedir.
 
-The workflow lives at [`.github/workflows/build-wix6.yml`](.github/workflows/build-wix6.yml).
+## Akış
 
-## Output
+- `Discover` → `Build` (container içinde tam upstream build + test zinciri) → `Publish`
+  (başarılıysa iç feed'e).
+- Sürüm: upstream `vX.Y.Z` → iç paket `X.Y.Z.1` (ilk hedef: `v7.0.0` → `7.0.0.1`). Kaynak değişikliği yalnız üç sürüm şablonunda
+  (`src/internal/SetBuildNumber/*.pp`) ve upstream kaynak ağacı build sonunda doğrulanır
+  (izlenen + izlenmeyen dosyalar; sabit release commit'i `b8977d6f88e7b68e000bac226a2814f236770570`).
+- Container'da koşamayan 39 MsiE2E testi (Windows Firewall / Server servisi — Microsoft platform
+  limiti) kanıtlı bir izinli liste ile sınırlıdır; TRX tutarlılığı doğrulanır ve liste dışı her
+  hata build'i kırar. Ayrıntı: [docs/container-test-notes.md](docs/container-test-notes.md).
+- GitHub tarafındaki `build-wix7.yml`, dispoze bir Windows runner'da gerçek Jenkins'i ayağa
+  kaldırıp aynı zinciri uçtan uca koşar ve arşivi indirir (kanıt/CI hattı).
 
-Actions -> **Build WiX 6.0.2 (CTech)** -> run -> **Artifacts**.
+## Çıktı
 
-- `wix6-ctech-packages`: all generated `.nupkg` and `.snupkg` (if the upstream build produces any), plus a JSON manifest with package IDs, versions, SHA-256 and dependencies.
-- `wix6-ctech-debug`: build/test logs (including MSBuild binlogs), when available.
-- `wix6-ctech-other`: any upstream non-NuGet artifacts, when available.
+Jenkins build arşivi: `.nupkg` + `.snupkg` (ör. `7.0.0.1`), `release-manifest.json`
+(paket ve sembol hash'leri dahil) ve `WixAdditionalTools.exe`; test sonuçları (TRX) `logs/`
+altında. Her build kendi artifact dizinini sıfırdan yazar; eski dosyalar arşive taşınamaz.
 
-The upstream project may generate PDB/ZIP outputs but **not** `.snupkg` packages; the workflow will not invent symbol packages after the build.
+## Güvenlik ve yayın
 
-## Security and publication
+Bu depo hiçbir iç feed adresi, API anahtarı veya kurumsal secret taşımaz; yayın anahtarı yalnız
+Jenkins credential store'dan (`nuget-push-api-key`) verilir. Paket ve sembol dosyaları yayın
+öncesi manifest hash'leriyle doğrulanır; feed'in ilan ettiği uç noktalar yalnız HTTPS ve feed
+origin'i içinde kabul edilir. Container araç zinciri indirmeleri hash pinlidir (bkz.
+`Install-BuildEnv.ps1`).
 
-This public repo contains **no internal feed URL, NuGet push key, or corporate secrets**. Download and verify the artifacts locally, then publish to the internal BaGetter separately.
-
-All packages need to be validated before publishing. The `6.0.2-ctech` version suffix is added **before compiling and packing**, including the central package version map and MSBuild SDK pin.
-
-The original upstream source remains under the MS-RL; review license and OSMF metadata before enterprise use.
-
-Upstream commit expected: `b3f340393117094a75ea8ced77f2357e4aa095e7`.
-
-The repo can be removed after the artifact ZIPs, logs, and manifest are downloaded and verified.
+Lisans: upstream MS-RL (kaynak ağacına dokunulmaz).

@@ -26,6 +26,21 @@ function Set-InternalVersionTemplates([string]$Root) {
     foreach ($update in $updates) { [IO.File]::WriteAllText($update.Path, $update.Content) }
 }
 
+function Set-UpstreamNuGetSource([string]$Root) {
+    # The build network blocks api.nuget.org and the internal feed serves the packages instead; redirect the
+    # single upstream source token exactly like the version templates (count-enforced).
+    $target = $env:WIX_NUGET_SOURCE
+    if (-not $target) { $target = 'https://nuget.c2tech.local/v3/index.json' }
+    $path = Join-Path $Root 'nuget.config'
+    if (-not (Test-Path -LiteralPath $path)) { throw "Upstream nuget.config missing: $path" }
+    $text = [IO.File]::ReadAllText($path)
+    $find = 'https://api.nuget.org/v3/index.json'
+    $count = [regex]::Matches($text, [regex]::Escape($find)).Count
+    if ($count -ne 1) { throw "Unexpected upstream nuget.config: found $count of 1 expected source token" }
+    [IO.File]::WriteAllText($path, $text.Replace($find, $target))
+    Write-Host "NuGet source redirected: $find -> $target"
+}
+
 function Invoke-Native([string]$Executable, [string[]]$Arguments) {
     & $Executable @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Executable failed with exit code $LASTEXITCODE" }
@@ -195,13 +210,8 @@ public static class PortableIdentity {
                 $symbols=@([pscustomobject]@{ file=[IO.Path]::GetFileName($symbol); sha256=(Get-FileHash $symbol -Algorithm SHA256).Hash; pdbs=@($pdbs) })
             } finally { $binaryZip.Dispose(); $symbolZip.Dispose() }
         }
-        $public = $false
-        if (-not $id.StartsWith('WixInternal.')) {
-            $upstream = $ReleaseTag.Substring(1)
-            $reference = Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/$($id.ToLowerInvariant())/$upstream/$($id.ToLowerInvariant()).nuspec" -SkipHttpErrorCheck
-            if ($reference.StatusCode -notin @(200,404)) { throw "Official package lookup indeterminate: $id HTTP $($reference.StatusCode)" }
-            $public = $reference.StatusCode -eq 200
-        }
+        if (-not $ExpectedPublicPackages.ContainsKey($ReleaseTag)) { throw "No pinned public package list for $ReleaseTag; add the verified upstream publishable set to `$ExpectedPublicPackages" }
+        $public = @($ExpectedPublicPackages[$ReleaseTag]) -contains $id
         [pscustomobject]@{ id=$id; file=$file.Name; sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash; public=$public; symbols=$symbols }
     }
     if (-not ($packages | Where-Object id -eq 'wix') -or -not ($packages | Where-Object id -eq 'WixToolset.Sdk')) { throw 'CLI/SDK packages missing' }
@@ -260,6 +270,45 @@ $ExpectedUpstreamCommits = @{ 'v7.0.0' = 'b8977d6f88e7b68e000bac226a2814f2367705
 # Exact per-tag E2E result counts from the pinned release runs; an unexpected count breaks the build loudly.
 $ExpectedTestCounts = @{ 'v7.0.0' = @{ BurnE2E = 185; MsiE2E = 53; WixE2ETests = 8 } }
 
+# Pinned public package identities per release (the verified set upstream publishes to nuget.org). The build
+# network has no route to nuget.org, so this list replaces the former flat-container lookup; an unpinned
+# release fails closed and must be pinned before packaging.
+$ExpectedPublicPackages = @{ 'v7.0.0' = @(
+    'WixToolset.Bal.wixext'
+    'WixToolset.BootstrapperApplicationApi'
+    'WixToolset.BootstrapperApplications.wixext'
+    'WixToolset.BootstrapperExtensionApi'
+    'WixToolset.ComPlus.wixext'
+    'WixToolset.DUtil'
+    'WixToolset.Data'
+    'WixToolset.Dependency.wixext'
+    'WixToolset.DirectX.wixext'
+    'WixToolset.Dtf.Compression'
+    'WixToolset.Dtf.Compression.Cab'
+    'WixToolset.Dtf.Compression.Zip'
+    'WixToolset.Dtf.CustomAction'
+    'WixToolset.Dtf.Resources'
+    'WixToolset.Dtf.WindowsInstaller'
+    'WixToolset.Dtf.WindowsInstaller.Linq'
+    'WixToolset.Dtf.WindowsInstaller.Package'
+    'WixToolset.Extensibility'
+    'WixToolset.Firewall.wixext'
+    'WixToolset.Http.wixext'
+    'WixToolset.Iis.wixext'
+    'WixToolset.Msmq.wixext'
+    'WixToolset.Netfx.wixext'
+    'WixToolset.PowerShell.wixext'
+    'WixToolset.Sdk'
+    'WixToolset.Sql.wixext'
+    'WixToolset.UI.wixext'
+    'WixToolset.Util.wixext'
+    'WixToolset.Versioning'
+    'WixToolset.VisualStudio.wixext'
+    'WixToolset.WcaUtil'
+    'WixToolset.WixStandardBootstrapperApplicationFunctionApi'
+    'wix'
+) }
+
 if ($MyInvocation.InvocationName -eq '.') { return }
 $version = Get-InternalVersion $Tag
 if ($env:OS -ne 'Windows_NT') { throw 'WiX native build requires Windows' }
@@ -281,6 +330,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or $actualTag -ne $Tag) { throw 'Upstream source is not the requested release tag' }
     if (-not $ExpectedUpstreamCommits.ContainsKey($Tag) -or $sha -ne $ExpectedUpstreamCommits[$Tag]) { throw "Upstream $Tag resolved to $sha, which is not the pinned release commit" }
     Set-InternalVersionTemplates $source
+    Set-UpstreamNuGetSource $source
     $env:RuntimeTestsEnabled='true'; $env:WixOfficialBuild='false'; $env:SignBuild='false'; $env:NUGET_XMLDOC_MODE='skip'
     $rsp=Join-Path (Split-Path $env:CTECH_MSBUILD) 'MSBuild.rsp'
     [IO.File]::AppendAllText($rsp,"`r`n-p:NuGetAudit=false`r`n-p:CheckEolTargetFramework=false`r`n-warnAsMessage:NU1901,NU1902,NU1903,NU1904,NETSDK1138`r`n")
@@ -367,9 +417,9 @@ try {
     $artifacts=Join-Path $source 'build/artifacts'
     Add-PortablePackages $artifacts $version
     Write-ReleaseManifest $artifacts $Tag $sha $version
-    $allowed=@('src/internal/SetBuildNumber/SomeVerInfo.props.pp','src/internal/SetBuildNumber/Directory.Packages.props.pp','src/internal/SetBuildNumber/global.json.pp')
+    $allowed=@('src/internal/SetBuildNumber/SomeVerInfo.props.pp','src/internal/SetBuildNumber/Directory.Packages.props.pp','src/internal/SetBuildNumber/global.json.pp','nuget.config')
     $changed=@(& git.exe diff HEAD --name-only)
-    if ($LASTEXITCODE -ne 0 -or @($changed | Where-Object { $_ -notin $allowed }).Count -or $changed.Count -ne 3) { throw 'Unexpected upstream source modification' }
+    if ($LASTEXITCODE -ne 0 -or @($changed | Where-Object { $_ -notin $allowed }).Count -or $changed.Count -ne 4) { throw 'Unexpected upstream source modification' }
     # `git diff` never reports untracked paths, so the working tree is cross-checked too; only generated output may be untracked.
     $status=@(& git.exe status --porcelain=v1 --untracked-files=all)
     if ($LASTEXITCODE -ne 0) { throw 'Upstream working tree status unavailable' }

@@ -36,11 +36,13 @@ altında. Her build kendi artifact dizinini sıfırdan yazar; eski dosyalar arş
   edilir. Feed adresi `FEED_URL` ortam değişkeninden okunur; tanımsızsa dosyadaki yer tutucu
   kullanılır — gerçek yayın öncesi mutlaka tanımlanmalıdır. GitHub Releases API için opsiyonel
   `GITHUB_TOKEN` (rate limit) verilebilir.
-- **Ağ:** container; `github.com` (klon + pwsh/MinGit indirmeleri), `download.visualstudio.microsoft.com`
-  (VS Build Tools), `dot.net` + MS CDN (.NET SDK), `dist.nuget.org` (nuget.exe), `api.nuget.org` +
-  `globalcdn.nuget.org` (NuGet restore ve resmi paket varlık sorgusu), `mcr.microsoft.com`
-  (baz imaj) adreslerine erişebilmeli. Agent ayrıca `api.github.com` (sürüm keşfi), `mcr.microsoft.com`
-  (imaj çekme) ve iç feed'e erişir.
+- **Ağ (hedef iç ağ):** container; `github.com` (klon + pwsh/MinGit indirmeleri),
+  `download.visualstudio.microsoft.com` (VS Build Tools), `dot.net` + MS CDN (.NET SDK),
+  `nuget.c2tech.local` (NuGet — tüm paketler internal feed'den), `mcr.microsoft.com` (baz imaj)
+  adreslerine erişir. `api.nuget.org`/`globalcdn.nuget.org`/`dist.nuget.org` iç ağdan **kapalıdır**;
+  bu yüzden klondaki NuGet kaynağı kontrollü olarak `nuget.c2tech.local`'a çevrilir (`WIX_NUGET_SOURCE`
+  ile override edilebilir; CI smoke internetli adresi kullanır) ve `nuget.exe` VS Build Tools içinden
+  alınır. Agent ayrıca `api.github.com` (sürüm keşfi) ve iç feed'e erişir.
 - **Kalıcı durum:** Jenkins workspace kalıcıdır; keşif kararı `artifacts/<tag>/release-manifest.json`
   ve feed sorgusundan okunur. Her koşu yalnız kendi log/artifact'ını arşivler.
 
@@ -52,8 +54,10 @@ yoksa **build**; manifest var ama feed'de eksik paket varsa **publish** (yeniden
 her şey yayınlanmışsa **skip**. Yepyeni bir sürüm ilk görüldüğünde süreç bilinçli olarak durur:
 (1) koşu, sabitlenmemiş commit'i hata mesajında bildirir → `$ExpectedUpstreamCommits`'e eklenir;
 (2) sonraki koşu testleri koşar ve ölçülen sonuç sayılarını hata mesajında bildirir →
-`$ExpectedTestCounts`'a eklenir; (3) sonraki koşu üretir ve yayınlar. Bu iki pin bilinçli bir
-güvenlik kapısıdır (taşınmış tag ve beklenmeyen test seti tespiti).
+`$ExpectedTestCounts`'a eklenir; (3) yayın seti pinlenir → `$ExpectedPublicPackages`'e eklenir
+(nuget.org'a erişebilen bir makineden doğrulanır; hangi paketlerin feed'e gideceğini bu liste
+belirler); (4) sonraki koşu üretir ve yayınlar. Bu pinler bilinçli bir güvenlik kapısıdır
+(taşınmış tag, beklenmeyen test seti ve yanlış yayın seti tespiti).
 
 ## Kendi ortamında deneme
 

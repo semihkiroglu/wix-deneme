@@ -37,6 +37,29 @@ try {
 } finally { Remove-Item $root -Recurse -Force }
 Write-Host 'PASS: stable 7+ tags, rejection boundaries, exact three version replacements and incompatible-template rejection'
 
+# nuget.config substitution: count-enforced, internal default, environment override.
+$nugetRoot = Join-Path ([IO.Path]::GetTempPath()) ('wix-nugetcfg-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force $nugetRoot | Out-Null
+try {
+    $cfg = '<?xml version="1.0"?><configuration><packageSources><add key="nuget" value="https://api.nuget.org/v3/index.json" /></packageSources></configuration>'
+    [IO.File]::WriteAllText((Join-Path $nugetRoot 'nuget.config'), $cfg)
+    Set-UpstreamNuGetSource $nugetRoot
+    if ([IO.File]::ReadAllText((Join-Path $nugetRoot 'nuget.config')) -notmatch 'nuget\.c2tech\.local/v3/index\.json') { throw 'nuget.config was not redirected to the internal feed' }
+    $env:WIX_NUGET_SOURCE = 'https://api.nuget.org/v3/index.json'
+    [IO.File]::WriteAllText((Join-Path $nugetRoot 'nuget.config'), $cfg)
+    Set-UpstreamNuGetSource $nugetRoot
+    if ([IO.File]::ReadAllText((Join-Path $nugetRoot 'nuget.config')) -notmatch 'api\.nuget\.org/v3/index\.json') { throw 'WIX_NUGET_SOURCE override ignored' }
+    Set-Item Env:WIX_NUGET_SOURCE -Value ''
+    [IO.File]::WriteAllText((Join-Path $nugetRoot 'nuget.config'), '<configuration></configuration>')
+    $rejected=$false; try { Set-UpstreamNuGetSource $nugetRoot | Out-Null } catch { $rejected=$_.Exception.Message -match 'nuget.config' }
+    if (-not $rejected) { throw 'nuget.config without the expected source token was accepted' }
+    if (@($ExpectedPublicPackages['v7.0.0']).Count -ne 33 -or -not (@($ExpectedPublicPackages['v7.0.0']) -contains 'wix') -or -not (@($ExpectedPublicPackages['v7.0.0']) -contains 'WixToolset.Sdk')) { throw 'The pinned v7.0.0 public set must be the verified 33-package list' }
+} finally {
+    [Environment]::SetEnvironmentVariable('WIX_NUGET_SOURCE', $null)
+    Remove-Item $nugetRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+Write-Host 'PASS: nuget.config is redirected to the internal feed with a count-enforced, overridable substitution'
+
 # Execute the harness's real staging loop and check its Docker COPY contract.
 & {
     $Source=Split-Path $PSScriptRoot -Parent
@@ -133,6 +156,11 @@ if ($build.Contains('No pinned test result counts')) { throw 'An unpinned releas
 if (-not $build.Contains('WixE2E failures are not container-limited')) { throw 'Build-Wix must validate the WixE2E tail TRX after the container-limited stage' }
 if (-not $build.Contains('@($burnTrx,$msiTrx,$wixTrx)')) { throw 'A fully green test chain must validate all three TRX files' }
 if (-not $build.Contains('WixE2E failures: ')) { throw 'A fully green test chain must fail on WixE2E failures' }
+if (-not $build.Contains('$ExpectedPublicPackages')) { throw 'Build-Wix must pin the public package identities per release' }
+if ($build.Contains('v3-flatcontainer')) { throw 'Build-Wix must not contact nuget.org (blocked on the build network)' }
+if (-not $build.Contains('nuget.c2tech.local')) { throw 'The internal feed must be the default NuGet source substitution target' }
+if (-not $build.Contains('WIX_NUGET_SOURCE')) { throw 'The NuGet source substitution needs its environment override' }
+if (-not $build.Contains("'nuget.config'")) { throw 'The nuget.config substitution must be in the guarded allowlist' }
 
 function New-TestTrx([string]$Path, [string]$Counters, [string]$Results, [string]$Outcome = 'Failed') {
     [IO.File]::WriteAllText($Path, '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><ResultSummary outcome="' + $Outcome + '"><Counters ' + $Counters + ' /></ResultSummary><Results>' + $Results + '</Results></TestRun>')
@@ -172,6 +200,7 @@ foreach ($pin in @(
     '992d70cac5b06c38efec91806caba64cdcc07e6d963a0959dbbbaf264d33b800'
 )) { if (-not $envScript.Contains($pin)) { throw "Install-BuildEnv is missing a pinned payload hash: $pin" } }
 if (@([regex]::Matches($envScript, 'Get-PinnedFile \S+ \S+ -Sha256')).Count -lt 6) { throw 'All toolchain payload downloads must pass -Sha256' }
+if (-not $envScript.Contains('CommonExtensions\Microsoft\NuGet\NuGet.exe')) { throw 'Install-BuildEnv must prefer the Visual Studio Build Tools nuget.exe' }
 Write-Host 'PASS: the toolchain payloads are hash-pinned'
 
 # The smoke harness must not verify downloads against sidecar checksums fetched from the same source.
@@ -186,6 +215,7 @@ Write-Host 'PASS: Jenkins downloads are pinned to embedded hashes'
 $jenkinsfile=(Get-Content (Join-Path $PSScriptRoot '../Jenkinsfile') -Raw)
 if (-not ($jenkinsfile.Contains('Get-ChildItem -LiteralPath $outDir') -and $jenkinsfile.Contains('Remove-Item -Recurse -Force'))) { throw 'The per-tag artifact directory must be cleared before each build so stale packages cannot be archived' }
 if (-not $jenkinsfile.Contains("(Get-Location) 'logs'")) { throw 'The persistent logs directory must be cleared at the start of every run so stale logs cannot be archived' }
+if (-not $jenkinsfile.Contains('WIX_NUGET_SOURCE')) { throw 'The Jenkinsfile must forward WIX_NUGET_SOURCE into the build container' }
 Write-Host 'PASS: the per-tag artifact directory is cleared before each build'
 
 # Documentation must describe the delivered pipeline, and process snapshots must not live in the repository.

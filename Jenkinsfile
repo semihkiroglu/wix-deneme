@@ -108,7 +108,10 @@ New-Item -ItemType Directory -Force -Path $outDir, $logDir | Out-Null
 Write-Host "Windows host build $build -> $base"
 docker build --force-rm -m 4GB --build-arg "BASE_IMAGE=$base" -f (Join-Path $ws 'Dockerfile') -t $image $ws
 if ($LASTEXITCODE -ne 0) { throw "docker build for $tag failed with $LASTEXITCODE" }
-docker create --storage-opt size=120GB --name $container -v "${outDir}:C:\\output" $image -Tag $tag -Output 'C:\\output' | Out-Null
+$createArgs = @('create','--storage-opt','size=120GB','--name',$container,'-v',"${outDir}:C:\\output")
+if ($env:WIX_NUGET_SOURCE) { $createArgs += @('-e', "WIX_NUGET_SOURCE=$($env:WIX_NUGET_SOURCE)") }
+$createArgs += @($image,'-Tag',$tag,'-Output','C:\\output')
+docker @createArgs | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "docker create for $tag failed with $LASTEXITCODE" }
 $ErrorActionPreference = 'Continue'   # docker writes progress to stderr; keep it in the log, not an exception
 docker start -a $container 2>&1 | Tee-Object -FilePath (Join-Path $logDir ($tag + '.log'))

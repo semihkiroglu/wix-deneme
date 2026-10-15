@@ -198,9 +198,16 @@ if ($gitVersion -notmatch "\b$([regex]::Escape($MinGitVersion))\b") { throw "Une
 
 New-Item -ItemType Directory -Force -Path 'C:\tools\nuget' | Out-Null
 $nuget = 'C:\tools\nuget\nuget.exe'
-Get-PinnedFile $NuGetUrl $nuget -Sha256 $NuGetSha256
-$nugetVersion = (Get-Item $nuget).VersionInfo.ProductVersion
-if ($nugetVersion -notlike "$NuGetVersion*") { throw "Unexpected nuget.exe version: $nugetVersion" }
+# The build network has no route to dist.nuget.org; Visual Studio Build Tools ships its own nuget.exe.
+$vsNuget = Join-Path $VsRoot 'Common7\IDE\CommonExtensions\Microsoft\NuGet\NuGet.exe'
+if (Test-Path -LiteralPath $vsNuget) {
+    Copy-Item -LiteralPath $vsNuget -Destination $nuget -Force
+    Write-Host "nuget.exe $((Get-Item $nuget).VersionInfo.ProductVersion) from Visual Studio Build Tools"
+} else {
+    Get-PinnedFile $NuGetUrl $nuget -Sha256 $NuGetSha256
+    $nugetVersion = (Get-Item $nuget).VersionInfo.ProductVersion
+    if ($nugetVersion -notlike "$NuGetVersion*") { throw "Unexpected nuget.exe version: $nugetVersion" }
+}
 
 # --- Legacy MSTest reference (official VS payload) --------------------------
 $legacyVsix = Join-Path $DownloadRoot 'Legacy.Common.payload.vsix'

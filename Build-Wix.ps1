@@ -419,7 +419,8 @@ try {
     Write-ReleaseManifest $artifacts $Tag $sha $version
     $allowed=@('src/internal/SetBuildNumber/SomeVerInfo.props.pp','src/internal/SetBuildNumber/Directory.Packages.props.pp','src/internal/SetBuildNumber/global.json.pp','nuget.config')
     $changed=@(& git.exe diff HEAD --name-only)
-    if ($LASTEXITCODE -ne 0 -or @($changed | Where-Object { $_ -notin $allowed }).Count -or $changed.Count -ne 4) { throw 'Unexpected upstream source modification' }
+    # The three templates always change; nuget.config changes only when the substitution target differs from the upstream source (a no-op in the CI smoke), so three is legitimate.
+    if ($LASTEXITCODE -ne 0 -or @($changed | Where-Object { $_ -notin $allowed }).Count -or $changed.Count -lt 3) { throw 'Unexpected upstream source modification' }
     # `git diff` never reports untracked paths, so the working tree is cross-checked too; only generated output may be untracked.
     $status=@(& git.exe status --porcelain=v1 --untracked-files=all)
     if ($LASTEXITCODE -ne 0) { throw 'Upstream working tree status unavailable' }

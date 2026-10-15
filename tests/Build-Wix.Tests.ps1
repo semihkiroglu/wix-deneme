@@ -161,6 +161,7 @@ if ($build.Contains('v3-flatcontainer')) { throw 'Build-Wix must not contact nug
 if (-not $build.Contains('nuget.c2tech.local')) { throw 'The internal feed must be the default NuGet source substitution target' }
 if (-not $build.Contains('WIX_NUGET_SOURCE')) { throw 'The NuGet source substitution needs its environment override' }
 if (-not $build.Contains("'nuget.config'")) { throw 'The nuget.config substitution must be in the guarded allowlist' }
+if (-not $build.Contains('$changed.Count -lt 3')) { throw 'The diff guard must accept the no-op substitution case (three template files)' }
 
 function New-TestTrx([string]$Path, [string]$Counters, [string]$Results, [string]$Outcome = 'Failed') {
     [IO.File]::WriteAllText($Path, '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><ResultSummary outcome="' + $Outcome + '"><Counters ' + $Counters + ' /></ResultSummary><Results>' + $Results + '</Results></TestRun>')

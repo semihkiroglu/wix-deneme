@@ -27,7 +27,8 @@ jobs:
           $p = Start-Process -FilePath .\vs_BuildTools.exe -ArgumentList $args -Wait -PassThru
           "installer exit: $($p.ExitCode)"
           if ($p.ExitCode -notin @(0,3010)) { throw "VS install failed: $($p.ExitCode)" }
-          "installed build: $((& '${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe' -products * -property installationVersion | Where-Object { $_ -like '17.14*' }))"
+          $vsInstalled = @(& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -products * -property installationVersion | Where-Object { $_ -like '17.14*' })
+          "installed build: $($vsInstalled -join ', ')"
 
       - name: Phase 1 - search nuget.exe with the production component set
         shell: pwsh

@@ -198,6 +198,7 @@ if ($gitVersion -notmatch "\b$([regex]::Escape($MinGitVersion))\b") { throw "Une
 
 New-Item -ItemType Directory -Force -Path 'C:\tools\nuget' | Out-Null
 $nuget = 'C:\tools\nuget\nuget.exe'
+# Visual Studio Build Tools ships no nuget.exe CLI (only NuGet.Build.Tasks.Console.exe), so the pinned download is the single source.
 Get-PinnedFile $NuGetUrl $nuget -Sha256 $NuGetSha256
 $nugetVersion = (Get-Item $nuget).VersionInfo.ProductVersion
 if ($nugetVersion -notlike "$NuGetVersion*") { throw "Unexpected nuget.exe version: $nugetVersion" }

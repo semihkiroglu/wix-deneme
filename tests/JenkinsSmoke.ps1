@@ -47,6 +47,7 @@ job.scheduleBuild2(0,new ParametersAction(new BooleanParameterValue('PUBLISH',fa
 $env:JENKINS_HOME=$jenkinsHome
 $env:WIX_SMOKE_JENKINSFILE=Join-Path $workspace 'Jenkinsfile'
 $env:WIX_PIPELINE_SOURCE=$workspace
+$env:FEED_URL='https://nuget.example.internal/v3/index.json'   # smoke never publishes; an unreachable feed keeps discovery on the build path
 $stdout=Join-Path $Evidence 'jenkins-server.log'; $stderr=Join-Path $Evidence 'jenkins-server-error.log'
 $server=Start-Process 'java' -ArgumentList @('-Djenkins.install.runSetupWizard=false','-jar',"`"$war`"",'--httpPort=8081','--httpListenAddress=127.0.0.1') -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
 $base='http://127.0.0.1:8081'

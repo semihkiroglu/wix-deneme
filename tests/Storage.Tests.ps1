@@ -44,7 +44,7 @@ try {
     $actual=Get-Content $testConfigPath -Raw | ConvertFrom-Json
     if ($actual.'data-root' -ne 'D:\wix-docker' -or $actual.debug -ne $false -or $actual.'exec-opts'[0] -ne 'isolation=process' -or $script:restarts -ne 1) { throw 'Docker config was not merged and applied exactly once' }
     Write-Host 'PASS: shared-host refusal, free-space refusal, workload refusal and config-preserving D: relocation'
-    $pipeline=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '../Jenkinsfile'))
+    $pipeline=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '../Run-TagBuild.ps1'))
     $guard=[regex]::Match($pipeline,'(?ms)(?<code>\$storageDrive = .*?)(?=Write-Host "Docker storage:)')
     if (-not $guard.Success) { throw 'Production Docker storage free-space guard missing' }
     $checkStorage=[scriptblock]::Create($guard.Groups['code'].Value)

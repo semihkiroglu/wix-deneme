@@ -221,6 +221,9 @@ if (-not ($jenkinsfile.Contains('Run-TagBuild.ps1') -and $jenkinsfile.Contains('
 if ($jenkinsfile.Contains('__WS__')) { throw 'The Jenkinsfile must not carry render placeholders' }
 if (-not $jenkinsfile.Contains('FEED_URL is required')) { throw 'A missing FEED_URL must fail the run loudly' }
 if (-not $smoke.Contains('FEED_URL')) { throw 'The smoke harness must provide an explicit FEED_URL' }
+foreach ($file in @('Run-TagBuild.ps1','Clear-TagRun.ps1')) {
+    if (-not $smoke.Contains($file)) { throw "The smoke harness must stage $file into the workspace" }
+}
 Write-Host 'PASS: the Jenkinsfile is thin orchestration over the repository scripts'
 
 # Documentation must describe the delivered pipeline, and process snapshots must not live in the repository.

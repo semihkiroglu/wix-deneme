@@ -201,14 +201,14 @@ try {
     $env:WixOfficialBuild='false'; $env:SignBuild='false'; $env:NUGET_XMLDOC_MODE='skip'
     Invoke-Native 'reg.exe' @('add','HKLM\Software\Policies\Microsoft\Windows\Installer','/t','REG_SZ','/v','Logging','/d','voicewarmupx','/f')
     Invoke-Native 'reg.exe' @('add','HKLM\Software\WOW6432Node\Policies\Microsoft\Windows\Installer','/t','REG_SZ','/v','Logging','/d','voicewarmupx','/f')
-    # Upstream LongPathFixture passes msi.dll an 8.3 short name for files over MAX_PATH (LongPathUtil.CreateOrGetShortPath); container volumes create no aliases by default, so MSI database creation over MAX_PATH fails with 1631.
+    # MSI database creation over MAX_PATH needs 8.3 short names (LongPathUtil.CreateOrGetShortPath); container volumes create no aliases by default, so enable them and fail fast if impossible.
     Invoke-Native 'fsutil.exe' @('8dot3name','set','C:','0')
     Invoke-Native 'fsutil.exe' @('8dot3name','set','0')
     Invoke-Native 'reg.exe' @('add','HKLM\SYSTEM\CurrentControlSet\Control\FileSystem','/v','NtfsDisable8dot3NameCreation','/t','REG_DWORD','/d','0','/f')
     $aliasProbe=Join-Path $env:TEMP 'wix-8dot3-probe.txt'
     [IO.File]::WriteAllText($aliasProbe,'x')
     $shortAlias=((& cmd.exe /d /c "for %A in (`"$aliasProbe`") do @echo %~sA") -join '').Trim().Trim('"')
-    if ($shortAlias -eq $aliasProbe -or $shortAlias -notmatch '~') { throw "Container creates no 8.3 short names; the upstream long-path MSI test would fail: $shortAlias" }
+    if ($shortAlias -eq $aliasProbe -or $shortAlias -notmatch '~') { throw "Container creates no 8.3 short names; MSI creation over MAX_PATH would fail: $shortAlias" }
     Remove-Item $aliasProbe -Force
     Invoke-Upstream @('call src\clean.cmd','call src\build_init.cmd','call src\dtf\dtf.cmd release','call src\internal\internal.cmd release','call src\libs\libs.cmd release','call src\api\api.cmd release','call src\burn\burn.cmd release','call src\wix\wix.cmd release','call src\tools\tools.cmd release')
     Invoke-Upstream @('msbuild src\ext\Util\wixext\WixToolset.Util.wixext.csproj -Restore -t:Build -p:Configuration=Release -nologo -m -warnaserror -bl:build\logs\util_prebuild.binlog','msbuild src\ext\Util\wixext\WixToolset.Util.wixext.csproj -t:Pack -p:Configuration=Release -p:NoBuild=true -nologo -warnaserror -bl:build\logs\util_prepack.binlog')

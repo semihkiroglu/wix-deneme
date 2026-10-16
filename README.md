@@ -1,89 +1,36 @@
 # WiX iç paket üretimi (v7+; Jenkins + Windows container)
 
-Upstream `wixtoolset/wix` kaynak ağacından, **kaynak kod davranışı değiştirilmeden** kurum içi `.1`
-paketleri üretir (ilk hedef: `v7.0.0` → `7.0.0.1`). Derleme, Jenkins
-`windows1` agent'ında **Windows Docker container'ı içinde** koşar. Akış üç katmandır: `Jenkinsfile`
-(ince orkestrasyon), host scripti `Run-TagBuild.ps1` (docker) ve container içi `Build-Wix.ps1`
-(üretim).
+Upstream `wixtoolset/wix` kaynak ağacından kurum içi `.1` paketleri üretir (ör. `v7.0.0` → `7.0.0.1`).
+Kaynak koda dokunulmaz: yalnız sürüm şablonları ve NuGet kaynağı ikame edilir. Test koşulmaz — tag,
+upstream'in kendi test kapısından geçmiş resmi bir sürümdür; bizim kapımız derleme yeşili +
+manifest/hash doğrulamasıdır. Derleme, Jenkins `windows1` agent'ında bir Windows Docker container'ı
+içinde koşar.
 
-## Neden bu hat var
+## Ne yapar
 
-- **Birebir upstream davranışı:** kaynak koda dokunulmaz; izinli tek müdahale üç sürüm şablonu
-  (`src/internal/SetBuildNumber/*.pp`) ve `nuget.config` kaynağıdır. Build sonunda hem izlenen hem
-  izlenmeyen dosyalar denetlenir; izinli liste dışındaki tek bir değişiklik koşuyu kırar.
-- **Test koşulmaz (bilinçli karar):** yalnız upstream'in resmi sürüm tag'leri derlenir; tag, upstream'in
-  kendi resmi build'inde test zincirinden geçerek yayınlanmıştır (RuntimeTestsEnabled=true; test
-  geçmeden yayın yapılmaz). Kaynak değiştirilmediği için kabul edilen varsayım budur; bizim doğrulama
-  kapılarımız: kaynak-diff denetimi + derleme yeşili + manifest/hash readback.
-- **Dış bağımlılık içeride:** tüm NuGet trafiği iç feed'den (`nuget.c2tech.local`) akar; klondaki tek
-  kaynak adresi kontrollü olarak ikame edilir (`WIX_NUGET_SOURCE` ile geçersiz kılınabilir).
-- **Kimlik:** her paket `X.Y.Z.1` sürümünü, her manifest kaynak commit'ini (`source_sha`) taşır.
+Her gün upstream sürüm listesi kontrol edilir:
+- **build** — yeni tag: klon → sürüm ikamesi → derleme → paketleme,
+- **publish** — eksik yayın: yeniden derlemeden feed'e gönderim,
+- **skip** — yeni bir şey yok: docker hiç başlamaz (saniyeler sürer).
 
-## Nasıl çalışır (her koşuda)
+Çıktı: 47 nupkg + sembol paketleri + `release-manifest.json` (+ `WixAdditionalTools.exe`); loglar
+`logs/` altında.
 
-1. **Discover** — upstream sürüm listesi (api.github.com) iç feed ile karşılaştırılır; her etiket için:
-   - `build`: yerelde manifest yok → tam derleme,
-   - `publish`: manifest var ama feed'de eksik var → **yeniden derlemeden** yalnız gönderim,
-   - `skip`: hepsi yayınlanmış → hiçbir şey.
-   Karar özeti konsola yazılır, ayrıntısı `discovery.json` olarak arşivlenir.
-2. **Build** (yalnız gerekiyorsa) — geçici container: toolchain kurulumu → upstream klon (tag) →
-   version/nuget ikamesi → tüm modüllerin derlemesi → paketler + sembol paketleri +
-   `release-manifest.json` → host'a taşınır.
-3. **Publish** (yalnız gerekiyorsa ve `PUBLISH` açıksa) — public paketler ve sembolleri feed'e
-   gönderilir; her paket hash readback ile doğrulanır; var olan paketin üzerine farklı içerikle
-   yazılmaz.
+## Ne kullanır
 
-**Kaynak tüketimi:** yeni bir şey yoksa Build/Publish adımları tamamen atlanır (docker hiç başlamaz);
-günlük koşu saniyeler sürer. Kısmi yayında bile yeniden derleme yapılmaz.
+| Bileşen | Rol |
+|---|---|
+| `Jenkinsfile` | ince orkestrasyon; günlük 03:00 (Europe/Istanbul), `PUBLISH` parametresi |
+| `Run-TagBuild.ps1` / `Clear-TagRun.ps1` | host'ta docker container kurulumu + temizlik |
+| `Build-Wix.ps1` + `Install-BuildEnv.ps1` | container içi üretim + toolchain (VS Build Tools 17.14, .NET SDK 8/9, MinGit, pwsh — hepsi SHA-256 pinli) |
+| İç NuGet feed (`nuget.c2tech.local`) | paket kaynağı + yayın hedefi (`FEED_URL` zorunlu) |
+| Jenkins credential | `nuget-push-api-key` (push), git checkout credential'ı |
 
-## Kullanım
+## Kullanım / sorun giderme
 
-- **Job:** Pipeline → "Pipeline script from SCM" → bu depo, Script Path `Jenkinsfile`.
-  Zamanlama dosyada gömülüdür: her gün **03:00** (Europe/Istanbul). Parametre `PUBLISH`
-  (varsayılan `true`; yalnız derleme provası için `false`).
-- **Ortam:** `FEED_URL` **zorunludur** (ör. `https://nuget.c2tech.local/v3/index.json`); tanımsızsa
-  koşu ilk adımda durur.
-- **Credential'lar:** `nuget-push-api-key` (Secret text; feed push anahtarı) ve depo checkout'u için
-  bir git credential'ı. Keşif, `api.github.com`'un anonim kotasını kullanır; yoğun kullanımda
-  `GITHUB_TOKEN` tanımlanabilir.
-- **İlk koşu önerisi:** önce `PUBLISH=false` (derle, push yok) → yeşilse `PUBLISH=true`
-  (bu kez yalnız yayın yapar).
-- **Yeni upstream sürümü:** tamamen otomatik — manuel adım yoktur. Feed'e gidecek set **isim kuralıdır**:
-  `wix` + `WixToolset.*` (iç feed upstream'de wix ailesini yasaklar; dolayısıyla ne varsa biz servis
-  ederiz — public setin üst kümesi). `WixInternal.*` test altyapısıdır, arşivde kalır.
-- **Workspace kalıcıdır:** keşif kararı `artifacts/<tag>/release-manifest.json` üzerinden verilir;
-  workspace silinirse sistem sürümü "yeni" sanıp bir kez yeniden derler (~1 saat).
-
-## Çıktı
-
-Jenkins arşivi: `.nupkg` + `.snupkg` + `release-manifest.json` + `WixAdditionalTools.exe`; build
-logları `logs/` altında. Her koşu yalnız kendi çıktısını arşivler.
-
-## Gereksinimler (hedef ortam)
-
-- `windows1` etiketli agent; Windows container destekli Docker; Docker data-root diski ≥ 60 GiB boş
-  (koşu başında denetlenir; her build container'ı 120 GB yazılabilir katman alır).
-- Ağ: `github.com` (klon, pwsh/MinGit), `download.visualstudio.microsoft.com` (VS Build Tools),
-  `dot.net` (SDK), `dist.nuget.org` (nuget.exe), `api.github.com` (sürüm listesi),
-  `nuget.c2tech.local` (paketler), `mcr.microsoft.com` (baz imaj). `api.nuget.org` iç ağdan
-  kapalıdır; bu yüzden NuGet kaynağı iç feed'e ikame edilir.
-- Toolchain indirmelerinin tamamı pinli SHA-256'dır (`Install-BuildEnv.ps1`); hash tutmazsa koşu
-  durur.
-
-## Güvenlik ve yayın
-
-Bu depo hiçbir API anahtarı veya kurumsal secret taşımaz; yayın anahtarı yalnız Jenkins credential
-store'dan (`nuget-push-api-key`) verilir. Paket ve sembol dosyaları yayın öncesi manifest hash'leriyle
-doğrulanır; feed'in ilan ettiği uç noktalar yalnız HTTPS ve feed origin'i içinde kabul edilir (açıkça
-yapılandırılan ayrı HTTPS sembol sunucusu hariç).
-
-## Sorun giderme
-
-- Karar bilgisi önce konsolda: `discovery result: build=[...] publish=[...]`; ayrıntı `discovery.json`.
-- `skip` beklerken `build` geliyorsa: workspace temizlenmiş olabilir (yerel manifest yok) → bir kez
-  yeniden derler; kalıcı çözüm workspace'i korumaktır.
-- Publish'ta 409/hash uyuşmazlığı: var olan paket yerel içerikle aynıysa "exists" kabul edilir;
-  farklıysa koşu durur ve paketin üzerine yazılmaz.
-- `FEED_URL` hatası: Jenkins global env'de tanımlı değil demektir.
+- Job: Pipeline → "Pipeline script from SCM" → bu depo, Script Path `Jenkinsfile`.
+- `FEED_URL` tanımsızsa koşu ilk adımda durur; `PUBLISH=false` ile yalnız derleme provası yapılır.
+- Karar özeti konsolda: `discovery result: build=[...] publish=[...]`; ayrıntı `discovery.json`.
+- Yayınlanacak set isim kuralıdır: `wix` + `WixToolset.*`; `WixInternal.*` arşivde kalır.
 
 Lisans: kaynak ağaç upstream MS-RL; bu depo yalnız derleme hattıdır.

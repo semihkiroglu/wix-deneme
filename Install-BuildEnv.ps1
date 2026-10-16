@@ -68,6 +68,16 @@ function Get-Sha256([string]$Path) {
 
 New-Item -ItemType Directory -Force -Path $DownloadRoot | Out-Null
 
+# Burn tests require the real OS binary and initialized shell folders, not placeholders.
+# The burn area build runs these unit tests (burn.cmd release), so this is a build
+# requirement: .NET's GetFolderPath returns empty for folders that do not exist yet,
+# while burn's built-in variables resolve the path, and the assert then mismatches.
+if (-not (Test-Path "$env:WINDIR\System32\consent.exe")) { throw 'Windows container base lacks consent.exe required by upstream Burn tests' }
+foreach ($folder in @('Startup', 'MyPictures', 'Templates')) {
+    $path = [Environment]::GetFolderPath([Environment+SpecialFolder]$folder, [Environment+SpecialFolderOption]::Create)
+    if (-not $path -or -not (Test-Path $path)) { throw "Container profile folder unavailable: $folder" }
+}
+
 # Upstream DTF still targets net20; install the genuine CLR 2/3.5 Windows feature.
 if ([Environment]::OSVersion.Version.Build -ge 20348) {
     & dism.exe /Online /Add-Capability /CapabilityName:NetFx3 /NoRestart

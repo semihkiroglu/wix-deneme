@@ -137,6 +137,10 @@ Write-Host 'PASS: the container enables the 8.3 short names MSI creation over lo
 $envScript=(Get-Content (Join-Path $PSScriptRoot '../Install-BuildEnv.ps1') -Raw)
 if (-not $envScript.Contains('Microsoft.VisualStudio.Component.VC.ATL')) { throw 'Install-BuildEnv must keep the ATL component for the native toolchain' }
 Write-Host 'PASS: the environment installs ATL for the native toolchain'
+# Test-looking provisions are load-bearing: the dtf area build compiles the Dtf test projects (legacy MSTest payload)
+# and the burn area build runs BurnUnitTest (initialized shell folders).
+if (-not $envScript.Contains('Microsoft.VisualStudio.QualityTools.UnitTestFramework')) { throw 'The legacy MSTest payload is required by the dtf area build' }
+if (-not $envScript.Contains("'Startup', 'MyPictures', 'Templates'")) { throw 'Initialized shell folders are required by the burn unit tests the burn area build runs' }
 
 if (-not $build.Contains('--untracked-files=all')) { throw 'Build-Wix must guard untracked files in the upstream checkout' }
 if (-not $build.Contains('source_sha=$Sha')) { throw 'The release manifest must record the actual upstream commit of every build' }

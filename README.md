@@ -48,9 +48,9 @@ günlük koşu saniyeler sürer. Kısmi yayında bile yeniden derleme yapılmaz.
   `GITHUB_TOKEN` tanımlanabilir.
 - **İlk koşu önerisi:** önce `PUBLISH=false` (derle + test et, push yok) → yeşilse `PUBLISH=true`
   (bu kez yalnız yayın yapar).
-- **Yeni upstream sürümü:** tamamen otomatik — manuel adım yoktur. Feed'e gidecek set **isim kuralıyla**
-  belirlenir: `wix` + `WixToolset.*`, upstream'in de yayınlamadığı iç aileler hariç
-  (`Core*`, `Burn*`, `Converters*`, `Templates*`); `WixInternal.*` ve iç paketler arşivde kalır.
+- **Yeni upstream sürümü:** tamamen otomatik — manuel adım yoktur. Feed'e gidecek set **isim kuralıdır**:
+  `wix` + `WixToolset.*` (iç feed upstream'de wix ailesini yasaklar; dolayısıyla ne varsa biz servis
+  ederiz — public setin üst kümesi). `WixInternal.*` test altyapısıdır, arşivde kalır.
 - **Workspace kalıcıdır:** keşif kararı `artifacts/<tag>/release-manifest.json` üzerinden verilir;
   workspace silinirse sistem sürümü "yeni" sanıp bir kez yeniden derler (~1 saat).
 

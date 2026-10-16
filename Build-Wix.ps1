@@ -9,14 +9,13 @@ function Get-InternalVersion([string]$ReleaseTag) {
 }
 
 function Test-PublicPackage([string]$Id) {
-    # The internal feed must serve exactly what a nuget.org consumer would get, but it bans upstream wix and
-    # WixToolset (it proxies arbitrary third-party packages, yet returns 404 for the wix family), so the set
-    # cannot be probed on the feed. The verified v7.0.0 split reduces to this name rule — wix plus the
-    # WixToolset packages upstream publishes; the Core/Burn/Converters/Templates internals stay archive-only,
-    # mirroring the public view. Public packages never depend on the internals, so the feed stays complete.
-    if ($Id -eq 'wix') { return $true }
-    if ($Id -notmatch '^WixToolset\.') { return $false }
-    return $Id -notmatch '^WixToolset\.(Core|Burn|Converters|Templates)(\.|$)'
+    # The internal feed bans upstream wix/WixToolset entirely (arbitrary third-party packages are proxied; the
+    # wix family answers 404), so the feed carries exactly what this pipeline pushes and the set cannot be
+    # probed there. Publishing every wix/WixToolset package keeps the feed a superset of a nuget.org
+    # consumer's set — the Core/Burn/Converters/Templates payloads ride along harmlessly and are bundled
+    # inside the other packages anyway. WixInternal is test infrastructure and stays archive-only; upstream
+    # applies the same superset approach to its own internal feed (GitHub Packages receives every nupkg).
+    return (($Id -eq 'wix') -or ($Id -like 'WixToolset.*'))
 }
 
 function Set-InternalVersionTemplates([string]$Root) {

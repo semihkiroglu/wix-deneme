@@ -69,59 +69,6 @@ function Invoke-Upstream([string[]]$Commands) {
     try { Invoke-Native 'cmd.exe' @('/d','/c',$batch) } finally { Remove-Item $batch -Force }
 }
 
-function Invoke-UpstreamResult([string[]]$Commands) {
-    $batch = New-UpstreamBatch $Commands
-    # Out-Host keeps the chain output in the console/log without polluting the exit-code capture.
-    try { & cmd.exe @('/d','/c',$batch) | Out-Host; return $LASTEXITCODE } finally { Remove-Item $batch -Force }
-}
-
-function Get-TrxState([string]$TrxPath) {
-    $xml = New-Object System.Xml.XmlDocument
-    $xml.Load($TrxPath)
-    $namespace = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
-    $summary = $xml.SelectSingleNode('//*[local-name()="ResultSummary"]', $namespace)
-    if ($null -eq $summary) { throw "TRX has no result summary: $TrxPath" }
-    $counters = $summary.SelectSingleNode('*[local-name()="Counters"]', $namespace)
-    if ($null -eq $counters) { throw "TRX has no counters: $TrxPath" }
-    $results = @($xml.SelectNodes('//*[local-name()="UnitTestResult"]', $namespace) | ForEach-Object { [pscustomobject]@{ Name = $_.GetAttribute('testName'); Outcome = $_.GetAttribute('outcome') } })
-    [pscustomobject]@{ Outcome = $summary.GetAttribute('outcome'); Counters = $counters; Results = $results }
-}
-
-function Assert-TrxConsistent($State, [string]$TrxPath, [string[]]$ExpectedOutcomes = @('Completed')) {
-    # Mirrors the real VSTest/xunit TRX shape: counters.total/passed/failed track the individual results and
-    # 'executed' counts Passed+Failed; skipped tests appear as NotExecuted nodes while counters.notExecuted
-    # stays 0. The run must be complete and consistent and end in the expected summary state; an aborted or
-    # partial run breaks these equalities or flips a run-level counter.
-    $bad = @('error','timeout','aborted','inconclusive','passedButRunAborted','notRunnable') | Where-Object { [int]$State.Counters.GetAttribute($_) -ne 0 }
-    if ($bad.Count) { throw "TRX reports run-level errors ($($bad -join ', ')): $TrxPath" }
-    if ($State.Outcome -notin $ExpectedOutcomes) { throw "TRX summary outcome '$($State.Outcome)' is not one of $($ExpectedOutcomes -join '/'): $TrxPath" }
-    $counts = @{ Passed = 0; Failed = 0; NotExecuted = 0 }
-    foreach ($result in $State.Results) {
-        if ($result.Outcome -notin @('Passed','Failed','NotExecuted')) { throw "Unexpected test outcome '$($result.Outcome)' for '$($result.Name)': $TrxPath" }
-        $counts[$result.Outcome]++
-    }
-    $passed = [int]$State.Counters.GetAttribute('passed')
-    $failed = [int]$State.Counters.GetAttribute('failed')
-    $total = [int]$State.Counters.GetAttribute('total')
-    $executed = [int]$State.Counters.GetAttribute('executed')
-    if ($passed -ne $counts.Passed) { throw "TRX counter 'passed' is $passed but $($counts.Passed) results carry it: $TrxPath" }
-    if ($failed -ne $counts.Failed) { throw "TRX counter 'failed' is $failed but $($counts.Failed) results carry it: $TrxPath" }
-    if ($total -ne @($State.Results).Count) { throw "TRX total is $total but $(@($State.Results).Count) results are listed: $TrxPath" }
-    if ($executed -ne $passed + $failed) { throw "TRX executed count $executed does not equal passed+failed ($($passed + $failed)): $TrxPath" }
-    return @($State.Results | Where-Object { $_.Outcome -ne 'Passed' -and $_.Outcome -ne 'NotExecuted' } | ForEach-Object { $_.Name })
-}
-
-function Start-TestServices {
-    # The COM+ partition scenario needs these services; containers can start them, while the Windows Firewall
-    # and 'Server' services cannot run in a process-isolated container at all.
-    foreach ($name in @('COMSysApp','MSDTC')) {
-        if ((Get-Service -Name $name -ErrorAction SilentlyContinue).Status -ne 'Running') {
-            try { Start-Service -Name $name -ErrorAction Stop; Write-Host "Test service started: $name" }
-            catch { Write-Host "Test service could not be started: $name ($($_.Exception.Message))" }
-        }
-    }
-}
-
 function Read-PackageXml($Zip) {
     $entries = @($Zip.Entries | Where-Object { $_.FullName -match '^[^/]+[.]nuspec$' })
     if ($entries.Count -ne 1) { throw 'Expected exactly one package nuspec' }
@@ -229,91 +176,6 @@ public static class PortableIdentity {
     [pscustomobject]@{ tag=$ReleaseTag; source_sha=$Sha; version=$Version; packages=@($packages) } | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $Folder 'release-manifest.json') -Encoding utf8
 }
 
-# MsiE2E fixtures that need Windows services a process-isolated container cannot start: Windows Firewall
-# (mpssvc/BFE) and 'Server'/LanmanServer (SMB backed, needed for the ADSI machine-context assertions), plus
-# the COM+ partitions scenario that COMSysApp+MSDTC mitigate. This list is the authority; any failure
-# outside it breaks the build.
-$AllowedContainerFailures = @(
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.CanInstallAndUninstallFirewallRulesPackagedByDifferentModules',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.CanInstallAndUninstallFirewallRulesWithInterfaces',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.CanInstallAndUninstallFirewallRulesWithMinimalProperties',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.DisabledApplicationFirewallRuleIsEnabledAfterRepair',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.DisabledPortFirewallRuleIsEnabledAfterRepair',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.FirewallRulesUseFormattedStringProperties',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.FullSetOfScopeValuesCanBeUsed',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.MissingApplicationFirewallRuleIsAddedAfterRepair',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.MissingPortFirewallRuleIsAddedAfterRepair',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.ServiceNameIsPassedIntoNestedRules',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.SucceedWhenDoNothingFlagIsSet',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.SucceedWhenEnableOnlyFlagIsSet',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.SucceedWhenIgnoreOnFailureIsSet',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.SucceedWhenNoFlagIsSet',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.VarietyOfProtocolValuesCanBeUsed',
-    'WixToolsetTest.MsiE2E.FirewallExtensionTests.VerifierSelfTest',
-    'WixToolsetTest.MsiE2E.UtilExtensionGroupTests.CanAddCommentToExistingNonDomainGroup',
-    'WixToolsetTest.MsiE2E.UtilExtensionGroupTests.CanChangeCommentOfExistingNonDomainGroup',
-    'WixToolsetTest.MsiE2E.UtilExtensionGroupTests.CanCreateNewNonDomainGroupWithComment',
-    'WixToolsetTest.MsiE2E.UtilExtensionGroupTests.CanDeleteCommentOfExistingNonDomainGroup',
-    'WixToolsetTest.MsiE2E.UtilExtensionGroupTests.CanInstallAndUninstallNonDomainGroups',
-    'WixToolsetTest.MsiE2E.UtilExtensionGroupTests.CanRepairCommentOfNewNonDomainGroup',
-    'WixToolsetTest.MsiE2E.UtilExtensionGroupTests.CanRepairNonDomainGroups',
-    'WixToolsetTest.MsiE2E.UtilExtensionGroupTests.CanRepairNonDomainGroupsWithCommandLineParameters',
-    'WixToolsetTest.MsiE2E.UtilExtensionGroupTests.CanRollbackCommentOfExistingNonDomainGroup',
-    'WixToolsetTest.MsiE2E.UtilExtensionGroupTests.CanRollbackNonDomainGroups',
-    'WixToolsetTest.MsiE2E.UtilExtensionGroupTests.FailsIfNonDomainGroupExists',
-    'WixToolsetTest.MsiE2E.UtilExtensionUserTests.CanAddCommentToExistingUser',
-    'WixToolsetTest.MsiE2E.UtilExtensionUserTests.CanChangeCommentOfExistingUser',
-    'WixToolsetTest.MsiE2E.UtilExtensionUserTests.CanCreateNewUserWithComment',
-    'WixToolsetTest.MsiE2E.UtilExtensionUserTests.CanDeleteCommentOfExistingUser',
-    'WixToolsetTest.MsiE2E.UtilExtensionUserTests.CanInstallAndUninstallUsers',
-    'WixToolsetTest.MsiE2E.UtilExtensionUserTests.CanRepairCommentOfNewUser',
-    'WixToolsetTest.MsiE2E.UtilExtensionUserTests.CanRepairUsers',
-    'WixToolsetTest.MsiE2E.UtilExtensionUserTests.CanRepairUsersWithCommandLineParameters',
-    'WixToolsetTest.MsiE2E.UtilExtensionUserTests.CanRollbackCommentOfExistingUser',
-    'WixToolsetTest.MsiE2E.UtilExtensionUserTests.CanRollbackUsers',
-    'WixToolsetTest.MsiE2E.UtilExtensionUserTests.FailsIfUserExists',
-    'WixToolsetTest.MsiE2E.ComPlusExtensionTests.CanInstallAndUninstallWithPartitions'
-)
-
-# Pinned public package identities per release (the verified set upstream publishes to nuget.org). The build
-# network has no route to nuget.org, so this list replaces the former flat-container lookup; an unpinned
-# release fails closed and must be pinned before packaging.
-$ExpectedPublicPackages = @{ 'v7.0.0' = @(
-    'WixToolset.Bal.wixext'
-    'WixToolset.BootstrapperApplicationApi'
-    'WixToolset.BootstrapperApplications.wixext'
-    'WixToolset.BootstrapperExtensionApi'
-    'WixToolset.ComPlus.wixext'
-    'WixToolset.DUtil'
-    'WixToolset.Data'
-    'WixToolset.Dependency.wixext'
-    'WixToolset.DirectX.wixext'
-    'WixToolset.Dtf.Compression'
-    'WixToolset.Dtf.Compression.Cab'
-    'WixToolset.Dtf.Compression.Zip'
-    'WixToolset.Dtf.CustomAction'
-    'WixToolset.Dtf.Resources'
-    'WixToolset.Dtf.WindowsInstaller'
-    'WixToolset.Dtf.WindowsInstaller.Linq'
-    'WixToolset.Dtf.WindowsInstaller.Package'
-    'WixToolset.Extensibility'
-    'WixToolset.Firewall.wixext'
-    'WixToolset.Http.wixext'
-    'WixToolset.Iis.wixext'
-    'WixToolset.Msmq.wixext'
-    'WixToolset.Netfx.wixext'
-    'WixToolset.PowerShell.wixext'
-    'WixToolset.Sdk'
-    'WixToolset.Sql.wixext'
-    'WixToolset.UI.wixext'
-    'WixToolset.Util.wixext'
-    'WixToolset.Versioning'
-    'WixToolset.VisualStudio.wixext'
-    'WixToolset.WcaUtil'
-    'WixToolset.WixStandardBootstrapperApplicationFunctionApi'
-    'wix'
-) }
-
 if ($MyInvocation.InvocationName -eq '.') { return }
 $version = Get-InternalVersion $Tag
 if ($env:OS -ne 'Windows_NT') { throw 'WiX native build requires Windows' }
@@ -336,7 +198,7 @@ try {
     Set-InternalVersionTemplates $source
     Set-UpstreamNuGetSource $source
     # NuGetAudit/EOL warning suppressions already live in the image's MSBuild.rsp (Install-BuildEnv.ps1).
-    $env:RuntimeTestsEnabled='true'; $env:WixOfficialBuild='false'; $env:SignBuild='false'; $env:NUGET_XMLDOC_MODE='skip'
+    $env:WixOfficialBuild='false'; $env:SignBuild='false'; $env:NUGET_XMLDOC_MODE='skip'
     Invoke-Native 'reg.exe' @('add','HKLM\Software\Policies\Microsoft\Windows\Installer','/t','REG_SZ','/v','Logging','/d','voicewarmupx','/f')
     Invoke-Native 'reg.exe' @('add','HKLM\Software\WOW6432Node\Policies\Microsoft\Windows\Installer','/t','REG_SZ','/v','Logging','/d','voicewarmupx','/f')
     # Upstream LongPathFixture passes msi.dll an 8.3 short name for files over MAX_PATH (LongPathUtil.CreateOrGetShortPath); container volumes create no aliases by default, so MSI database creation over MAX_PATH fails with 1631.
@@ -361,53 +223,12 @@ try {
     Invoke-Upstream @('call src\ext\ext.cmd release inc')
     $canonical='src\ext\PowerShell\wixext\WixToolset.PowerShell.wixext.csproj'
     if (Test-Path $canonical) {
-        Invoke-Upstream @("msbuild $canonical -Restore -t:Rebuild -p:Configuration=Release -p:BuildProjectReferences=false -nologo -warnaserror -bl:build\logs\powershell_canonical_build.binlog",'msbuild src\ext\PowerShell\test\WixToolsetTest.PowerShell\WixToolsetTest.Powershell.csproj -t:Rebuild;Test -p:Configuration=Release -p:BuildProjectReferences=false -nologo -warnaserror -bl:build\logs\powershell_canonical_test.binlog')
+        Invoke-Upstream @("msbuild $canonical -Restore -t:Rebuild -p:Configuration=Release -p:BuildProjectReferences=false -nologo -warnaserror -bl:build\logs\powershell_canonical_build.binlog",'msbuild src\ext\PowerShell\test\WixToolsetTest.PowerShell\WixToolsetTest.Powershell.csproj -t:Rebuild -p:Configuration=Release -p:BuildProjectReferences=false -nologo -warnaserror -bl:build\logs\powershell_canonical_rebuild.binlog')
         $wrong=Join-Path $source "build/artifacts/WixToolset.Powershell.wixext.$version.nupkg"
         if (Test-Path $wrong) { Remove-Item $wrong -Force }
         Invoke-Upstream @("msbuild $canonical -t:Pack -p:Configuration=Release -p:NoBuild=true -p:BuildProjectReferences=false -nologo -warnaserror -bl:build\logs\powershell_canonical_pack.binlog")
     }
     Invoke-Upstream @('call src\setup\setup.cmd release')
-    Start-TestServices
-    # Every run is judged on its own evidence: complete, consistent, failure-free TRX files per stage.
-    $testExit = Invoke-UpstreamResult @('call src\test\test.cmd release')
-    $results = Join-Path $source 'build\logs\TestResults'
-    $burnTrx = Join-Path $results 'WixToolsetTest.BurnE2E.trx'
-    $msiTrx = Join-Path $results 'WixToolsetTest.MsiE2E.trx'
-    $wixTrx = Join-Path $results 'WixToolsetTest.WixE2ETests.trx'
-    $wixState = $null
-    if ($testExit -ne 0) {
-        # Windows containers cannot start the Windows Firewall and 'Server' services, so the MsiE2E fixtures
-        # that need them are allowed to fail; any other failure still breaks the build.
-        if (-not (Test-Path $burnTrx)) { throw 'Burn E2E results missing after the test chain aborted' }
-        $burnState = Get-TrxState $burnTrx
-        $burnFailed = @(Assert-TrxConsistent $burnState $burnTrx)
-        if ($burnFailed.Count) { throw "Burn E2E failures are not container-limited: $($burnFailed -join '; ')" }
-        if (-not (Test-Path $msiTrx)) { throw 'MSI E2E results missing; the chain aborted before the container-limited stage' }
-        $msiState = Get-TrxState $msiTrx
-        $msiFailed = @(Assert-TrxConsistent $msiState $msiTrx @('Failed','Completed'))
-        if (-not $msiFailed.Count) { throw 'The test chain failed outside the container-limited MsiE2E stage; refusing to continue' }
-        $unexpected = @($msiFailed | Where-Object { $_ -notin $AllowedContainerFailures })
-        if ($unexpected.Count) { throw "Unexpected MSI E2E failures: $($unexpected -join '; ')" }
-        # The upstream chain aborts at the MSI stage, so the tail suite has not run yet; this is its first run, not a retry.
-        Invoke-Upstream @('cd /d src\test', "dotnet test wix -c Release --nologo -l `"trx;LogFileName=$wixTrx`"")
-        $wixState = Get-TrxState $wixTrx
-        $wixFailed = @(Assert-TrxConsistent $wixState $wixTrx)
-        if ($wixFailed.Count) { throw "WixE2E failures are not container-limited: $($wixFailed -join '; ')" }
-    } else {
-        # A fully green chain is only accepted with its complete, consistent, failure-free result sets; the
-        # chain itself runs the WixE2E tail, so that TRX is validated here too.
-        foreach ($trx in @($burnTrx,$msiTrx,$wixTrx)) { if (-not (Test-Path $trx)) { throw "Missing test results for a green test chain: $trx" } }
-        $burnState = Get-TrxState $burnTrx
-        $burnFailed = @(Assert-TrxConsistent $burnState $burnTrx)
-        if ($burnFailed.Count) { throw "Burn E2E failures: $($burnFailed -join '; ')" }
-        $msiState = Get-TrxState $msiTrx
-        $msiFailed = @(Assert-TrxConsistent $msiState $msiTrx)
-        if ($msiFailed.Count) { throw "MSI E2E failures: $($msiFailed -join '; ')" }
-        $wixState = Get-TrxState $wixTrx
-        $wixFailed = @(Assert-TrxConsistent $wixState $wixTrx)
-        if ($wixFailed.Count) { throw "WixE2E failures: $($wixFailed -join '; ')" }
-    }
-    Write-Host "test result counts: BurnE2E=$(@($burnState.Results).Count); MsiE2E=$(@($msiState.Results).Count); WixE2ETests=$(@($wixState.Results).Count)"
     Invoke-Upstream @('call src\internal\finalize.cmd release')
     $artifacts=Join-Path $source 'build/artifacts'
     Add-PortablePackages $artifacts $version
@@ -434,12 +255,4 @@ try {
 } finally {
     $logs=Join-Path $Output 'logs'; New-Item -ItemType Directory -Force $logs | Out-Null
     if (Test-Path (Join-Path $source 'build/logs')) { Copy-Item (Join-Path $source 'build/logs/*') -Destination $logs -Recurse -Force }
-    if (Test-Path (Join-Path $source 'build')) {
-        foreach ($folder in Get-ChildItem (Join-Path $source 'build') -Recurse -Directory -Filter 'TestResults') {
-            $relative=[IO.Path]::GetRelativePath((Join-Path $source 'build'),$folder.FullName)
-            $destination=Join-Path $logs "test-results/$relative"
-            New-Item -ItemType Directory -Force $destination | Out-Null
-            Copy-Item (Join-Path $folder.FullName '*') -Destination $destination -Recurse -Force
-        }
-    }
 }

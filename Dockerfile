@@ -8,10 +8,7 @@ RUN reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabl
 
 COPY Install-BuildEnv.ps1 VswhereBootstrap.cs Build-Wix.ps1 C:\pipeline\
 
-ENV TESTINGPLATFORM_DIAGNOSTIC=1 `
-    TESTINGPLATFORM_DIAGNOSTIC_VERBOSITY=Trace `
-    TESTINGPLATFORM_DIAGNOSTIC_OUTPUT_DIRECTORY=C:\output\logs\testdiagnostics `
-    DOTNET_ROOT=C:\tools\dotnet `
+ENV DOTNET_ROOT=C:\tools\dotnet `
     DOTNET_ROOT_X86=C:\tools\dotnet-x86 `
     CTECH_VSROOT=C:\BuildTools `
     CTECH_MSBUILD=C:\BuildTools\MSBuild\Current\Bin\amd64\MSBuild.exe `

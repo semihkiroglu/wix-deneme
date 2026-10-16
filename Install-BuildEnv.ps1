@@ -39,15 +39,6 @@ $NuGetUrl = 'https://dist.nuget.org/win-x86-commandline/v7.9.0/nuget.exe'
 $NuGetVersion = '7.9.0'
 $NuGetSha256 = '992d70cac5b06c38efec91806caba64cdcc07e6d963a0959dbbbaf264d33b800'
 
-# Legacy MSTest reference payload, Microsoft.VisualStudio.TestTools.TestPlatform.Legacy.Common
-# from the VS 17 release channel manifest (payload URL and sha256 as published in
-# VisualStudio.vsman). No Build Tools component ships this v10.0.0.0 assembly, but
-# upstream WixToolsetTests.Dtf.Compression references it without a HintPath.
-$LegacyCommonVsixUrl = 'https://download.visualstudio.microsoft.com/download/pr/12aa1305-dd17-4f26-8429-d072cda64c80/5e45d0660f67ae22ae6307699bca214cea2a998ca8f534328f85beb5377b4f77/payload.vsix'
-$LegacyCommonVsixSha256 = '5e45d0660f67ae22ae6307699bca214cea2a998ca8f534328f85beb5377b4f77'
-$LegacyMstestSha256 = 'deecfaf419f82cc0f8a97456e5e2c0114ba96853d5f5ab95544d269b4c5898ab'
-$LegacyMstestIdentity = 'Microsoft.VisualStudio.QualityTools.UnitTestFramework, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'
-
 function Get-PinnedFile([string]$Url, [string]$Path, [string]$Sha256 = '') {
     # Every download must carry its pinned hash; a forgotten pin fails loudly instead of skipping verification.
     if (-not $Sha256) { throw "Get-PinnedFile requires the pinned SHA-256 of $Url" }
@@ -65,13 +56,6 @@ function Get-Sha256([string]$Path) {
 }
 
 New-Item -ItemType Directory -Force -Path $DownloadRoot | Out-Null
-
-# Burn tests require the real OS binary and initialized shell folders, not placeholders.
-if (-not (Test-Path "$env:WINDIR\System32\consent.exe")) { throw 'Windows container base lacks consent.exe required by upstream Burn tests' }
-foreach ($folder in @('Startup', 'MyPictures', 'Templates')) {
-    $path = [Environment]::GetFolderPath([Environment+SpecialFolder]$folder, [Environment+SpecialFolderOption]::Create)
-    if (-not $path -or -not (Test-Path $path)) { throw "Container profile folder unavailable: $folder" }
-}
 
 # Upstream DTF still targets net20; install the genuine CLR 2/3.5 Windows feature.
 if ([Environment]::OSVersion.Version.Build -ge 20348) {
@@ -137,10 +121,6 @@ foreach ($arch in @('x86', 'x64', 'arm64')) {
     $found = @($toolsets | ForEach-Object { Join-Path $_.FullName "bin\Hostx64\$arch\cl.exe" } | Where-Object { Test-Path -LiteralPath $_ })
     if (-not $found.Count) { throw "MSVC compiler missing for $arch" }
 }
-# Upstream ComPlusExtensionTests builds an ATL native test component (atlbase.h); the toolchain must provide the ATL headers.
-$atl = @($toolsets | ForEach-Object { Join-Path $_.FullName 'atlmfc\include\atlbase.h' } | Where-Object { Test-Path -LiteralPath $_ })
-if (-not $atl.Count) { throw 'ATL headers missing; the upstream ComPlusExtensionTests native component requires atlbase.h' }
-
 # --- VS compiler environment select -----------------------------------------
 # VS Build Tools default vswhere filter doesn't list Build Tools as an
 # installable product, so the real exe can't be discovered by upstream's
@@ -202,51 +182,6 @@ $nuget = 'C:\tools\nuget\nuget.exe'
 Get-PinnedFile $NuGetUrl $nuget -Sha256 $NuGetSha256
 $nugetVersion = (Get-Item $nuget).VersionInfo.ProductVersion
 if ($nugetVersion -notlike "$NuGetVersion*") { throw "Unexpected nuget.exe version: $nugetVersion" }
-
-# --- Legacy MSTest reference (official VS payload) --------------------------
-$legacyVsix = Join-Path $DownloadRoot 'Legacy.Common.payload.vsix'
-Get-PinnedFile $LegacyCommonVsixUrl $legacyVsix -Sha256 $LegacyCommonVsixSha256
-
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$publicAssemblies = Join-Path $VsRoot 'Common7\IDE\PublicAssemblies'
-$referenceAssemblies = Join-Path $VsRoot 'Common7\IDE\ReferenceAssemblies\v4.0'
-New-Item -ItemType Directory -Force -Path $publicAssemblies, $referenceAssemblies | Out-Null
-$legacyDll = Join-Path $publicAssemblies 'Microsoft.VisualStudio.QualityTools.UnitTestFramework.dll'
-
-$archive = [System.IO.Compression.ZipFile]::OpenRead($legacyVsix)
-try {
-    $targets = @(
-        @{ Entry = 'Contents/Common7/IDE/PublicAssemblies/Microsoft.VisualStudio.QualityTools.UnitTestFramework.dll'; Path = $legacyDll },
-        @{ Entry = 'Contents/Common7/IDE/ReferenceAssemblies/v4.0/Microsoft.VisualStudio.QualityTools.UnitTestFramework.dll'; Path = (Join-Path $referenceAssemblies 'Microsoft.VisualStudio.QualityTools.UnitTestFramework.dll') }
-    )
-    foreach ($target in $targets) {
-        $entry = @($archive.Entries | Where-Object { $_.FullName -eq $target.Entry })
-        if ($entry.Count -ne 1) { throw "Legacy MSTest payload entry missing: $($target.Entry)" }
-        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry[0], $target.Path, $true)
-        $hash = Get-Sha256 $target.Path
-        if ($hash -ne $LegacyMstestSha256) { throw "Legacy MSTest hash mismatch: $hash" }
-    }
-} finally {
-    $archive.Dispose()
-}
-
-$identity = [Reflection.AssemblyName]::GetAssemblyName($legacyDll).FullName
-if ($identity -ne $LegacyMstestIdentity) { throw "Unexpected legacy MSTest identity: $identity" }
-Write-Host "Legacy MSTest reference: $identity"
-
-# The upstream <Reference> has no HintPath, so MSBuild resolves it through the
-# AssemblyFoldersEx search path; register the two real folders holding the file
-# (64-bit and 32-bit views, as an MSBuild host may run in either).
-foreach ($registryRoot in @(
-    'HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319\AssemblyFoldersEx',
-    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\.NETFramework\v4.0.30319\AssemblyFoldersEx'
-)) {
-    foreach ($folder in @($publicAssemblies, $referenceAssemblies)) {
-        $key = Join-Path $registryRoot ("CTech BuildTools " + (Split-Path -Leaf $folder))
-        New-Item -Path $key -Force | Out-Null
-        Set-ItemProperty -Path $key -Name '(Default)' -Value $folder
-    }
-}
 
 # Environment-only settings proven on the validated build with this historical
 # toolchain: without them NuGet audit / EOL warnings fail the pinned build.

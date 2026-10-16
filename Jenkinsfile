@@ -25,8 +25,13 @@ pipeline {
     stage('Checkout') {
       steps {
         script {
-          // Refresh the SCM checkout; the persistent discovery state (artifacts/) lives on in the workspace.
-          checkout scm
+          // The disposable smoke harness pre-stages the workspace, where 'scm' does not exist; production always refreshes SCM.
+          if (!env.WIX_PIPELINE_SOURCE) {
+            echo 'Refreshing the SCM checkout.'
+            checkout scm
+          } else {
+            echo 'Using the existing workspace checkout.'
+          }
           // Each run archives only its own logs; clear the persistent logs directory up front.
           powershell(script: "Remove-Item -LiteralPath (Join-Path (Get-Location) 'logs') -Recurse -Force -ErrorAction SilentlyContinue")
         }

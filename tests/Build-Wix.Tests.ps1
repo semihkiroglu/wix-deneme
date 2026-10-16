@@ -180,6 +180,7 @@ if (-not ($clearrun.Contains('docker rm -f') -and $clearrun.Contains('docker rmi
 if (-not ($jenkinsfile.Contains('Run-TagBuild.ps1') -and $jenkinsfile.Contains('Clear-TagRun.ps1'))) { throw 'The Jenkinsfile must delegate to the repository scripts' }
 if ($jenkinsfile.Contains('__WS__')) { throw 'The Jenkinsfile must not carry render placeholders' }
 if (-not $jenkinsfile.Contains('FEED_URL is required')) { throw 'A missing FEED_URL must fail the run loudly' }
+if (-not ($jenkinsfile.Contains('checkout scm') -and $jenkinsfile.Contains('WIX_PIPELINE_SOURCE'))) { throw 'The Checkout stage must branch: harness workspace vs real SCM checkout' }
 if (-not $smoke.Contains('FEED_URL')) { throw 'The smoke harness must provide an explicit FEED_URL' }
 foreach ($file in @('Run-TagBuild.ps1','Clear-TagRun.ps1')) {
     if (-not $smoke.Contains($file)) { throw "The smoke harness must stage $file into the workspace" }

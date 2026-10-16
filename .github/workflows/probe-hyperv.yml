@@ -39,3 +39,11 @@ jobs:
           docker run --rm --isolation=hyperv -v C:\probe-hv:C:\output mcr.microsoft.com/windows/server:ltsc2022 cmd /c "echo ok > C:\output\probe.txt"
           Write-Host "docker exit code: $LASTEXITCODE"
           if (Test-Path C:\probe-hv\probe.txt) { Write-Host ('VOLUME OK: ' + (Get-Content C:\probe-hv\probe.txt)) } else { Write-Host 'VOLUME FAIL: probe.txt not on host' }
+
+      - name: "Hyper-V container: enable services + firewall COM in one session"
+        if: always()
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          docker run --rm --isolation=hyperv mcr.microsoft.com/windows/server:ltsc2022 powershell -NoProfile -Command 'sc.exe qc bfe; sc.exe qc mpssvc; sc.exe qc lanmanserver; sc.exe config bfe start= auto; sc.exe config mpssvc start= auto; sc.exe config lanmanserver start= auto; sc.exe start bfe; sc.exe start mpssvc; sc.exe start lanmanserver; Get-Service bfe,mpssvc,lanmanserver | Format-Table -AutoSize; try { $f = New-Object -ComObject HNetCfg.FwPolicy2; Write-Host ("FIREWALL COM OK profiles=" + $f.CurrentProfileTypes) } catch { Write-Host ("FIREWALL COM FAIL: " + $_.Exception.Message) }'
+          Write-Host "docker exit code: $LASTEXITCODE"

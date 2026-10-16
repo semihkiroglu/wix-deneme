@@ -40,10 +40,18 @@ jobs:
           Write-Host "docker exit code: $LASTEXITCODE"
           if (Test-Path C:\probe-hv\probe.txt) { Write-Host ('VOLUME OK: ' + (Get-Content C:\probe-hv\probe.txt)) } else { Write-Host 'VOLUME FAIL: probe.txt not on host' }
 
-      - name: "Hyper-V container: enable services + firewall COM in one session"
+      - name: "Hyper-V container: reg-add bypass + driver starts + COM rules"
         if: always()
         shell: pwsh
         continue-on-error: true
         run: |
-          docker run --rm --isolation=hyperv mcr.microsoft.com/windows/server:ltsc2022 powershell -NoProfile -Command 'sc.exe qc bfe; sc.exe qc mpssvc; sc.exe qc lanmanserver; sc.exe config bfe start= auto; sc.exe config mpssvc start= auto; sc.exe config lanmanserver start= auto; sc.exe start bfe; sc.exe start mpssvc; sc.exe start lanmanserver; Get-Service bfe,mpssvc,lanmanserver | Format-Table -AutoSize; try { $f = New-Object -ComObject HNetCfg.FwPolicy2; Write-Host ("FIREWALL COM OK profiles=" + $f.CurrentProfileTypes) } catch { Write-Host ("FIREWALL COM FAIL: " + $_.Exception.Message) }'
+          docker run --rm --isolation=hyperv mcr.microsoft.com/windows/server:ltsc2022 powershell -NoProfile -Command 'Write-Host "--- driver files ---"; Test-Path C:\Windows\System32\drivers\mpsdrv.sys; Test-Path C:\Windows\System32\drivers\srv2.sys; Test-Path C:\Windows\System32\drivers\srvnet.sys; Write-Host "--- reg add (bypass SCM acl) ---"; reg.exe add "HKLM\SYSTEM\CurrentControlSet\Services\mpssvc" /v Start /t REG_DWORD /d 2 /f; reg.exe add "HKLM\SYSTEM\CurrentControlSet\Services\bfe" /v Start /t REG_DWORD /d 2 /f; Write-Host "--- start attempts ---"; sc.exe start mpsdrv; sc.exe start bfe; sc.exe start mpssvc; sc.exe start samss; sc.exe start srv2; sc.exe start lanmanserver; Get-Service bfe,mpssvc,lanmanserver,samss -ErrorAction Continue | Format-Table -AutoSize; Write-Host "--- firewall COM rule ops ---"; try { $f=New-Object -ComObject HNetCfg.FwPolicy2; Write-Host ("RULES=" + $f.Rules.Count); $rule=New-Object -ComObject HNetCfg.FWRule; $rule.Name="probe-rule"; $rule.Direction=1; $rule.Action=1; $rule.Enabled=$true; $rule.Protocol=6; $rule.LocalPorts="49999"; $f.Rules.Add($rule); Write-Host "RULE ADD OK"; $f.Rules.Remove($rule); Write-Host "RULE REMOVE OK" } catch { Write-Host ("RULE OPS FAIL: " + $_.Exception.Message) }'
+          Write-Host "docker exit code: $LASTEXITCODE"
+
+      - name: "Hyper-V container: SYSTEM-user attempt"
+        if: always()
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          docker run --rm --isolation=hyperv --user "NT AUTHORITY\SYSTEM" mcr.microsoft.com/windows/server:ltsc2022 cmd /c "whoami & sc config mpssvc start= auto & sc start mpssvc & sc query mpssvc | findstr STATE"
           Write-Host "docker exit code: $LASTEXITCODE"

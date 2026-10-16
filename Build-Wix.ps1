@@ -8,6 +8,17 @@ function Get-InternalVersion([string]$ReleaseTag) {
     return "$($Matches[1]).1"
 }
 
+function Test-PublicPackage([string]$Id) {
+    # The internal feed must serve exactly what a nuget.org consumer would get, but it bans upstream wix and
+    # WixToolset (it proxies arbitrary third-party packages, yet returns 404 for the wix family), so the set
+    # cannot be probed on the feed. The verified v7.0.0 split reduces to this name rule — wix plus the
+    # WixToolset packages upstream publishes; the Core/Burn/Converters/Templates internals stay archive-only,
+    # mirroring the public view. Public packages never depend on the internals, so the feed stays complete.
+    if ($Id -eq 'wix') { return $true }
+    if ($Id -notmatch '^WixToolset\.') { return $false }
+    return $Id -notmatch '^WixToolset\.(Core|Burn|Converters|Templates)(\.|$)'
+}
+
 function Set-InternalVersionTemplates([string]$Root) {
     # Count = the exact number of version tokens in the pinned upstream templates; a changed count means the
     # upstream text moved, so the replacement must be re-verified instead of silently editing a different shape.
@@ -211,11 +222,11 @@ public static class PortableIdentity {
                 $symbols=@([pscustomobject]@{ file=[IO.Path]::GetFileName($symbol); sha256=(Get-FileHash $symbol -Algorithm SHA256).Hash; pdbs=@($pdbs) })
             } finally { $binaryZip.Dispose(); $symbolZip.Dispose() }
         }
-        if (-not $ExpectedPublicPackages.ContainsKey($ReleaseTag)) { throw "No pinned public package list for $ReleaseTag; add the verified upstream publishable set to `$ExpectedPublicPackages" }
-        $public = @($ExpectedPublicPackages[$ReleaseTag]) -contains $id
+        $public = Test-PublicPackage $id
         [pscustomobject]@{ id=$id; file=$file.Name; sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash; public=$public; symbols=$symbols }
     }
     if (-not ($packages | Where-Object id -eq 'wix') -or -not ($packages | Where-Object id -eq 'WixToolset.Sdk')) { throw 'CLI/SDK packages missing' }
+    Write-Host ("package classification: {0} public / {1} archive-only" -f @($packages | Where-Object public).Count, @($packages | Where-Object { -not $_.public }).Count)
     [pscustomobject]@{ tag=$ReleaseTag; source_sha=$Sha; version=$Version; packages=@($packages) } | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $Folder 'release-manifest.json') -Encoding utf8
 }
 

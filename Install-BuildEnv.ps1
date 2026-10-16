@@ -206,8 +206,6 @@ if ($nugetVersion -notlike "$NuGetVersion*") { throw "Unexpected nuget.exe versi
 # --- Legacy MSTest reference (official VS payload) --------------------------
 $legacyVsix = Join-Path $DownloadRoot 'Legacy.Common.payload.vsix'
 Get-PinnedFile $LegacyCommonVsixUrl $legacyVsix -Sha256 $LegacyCommonVsixSha256
-$payloadHash = Get-Sha256 $legacyVsix
-if ($payloadHash -ne $LegacyCommonVsixSha256) { throw "Legacy.Common payload hash mismatch: $payloadHash" }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $publicAssemblies = Join-Path $VsRoot 'Common7\IDE\PublicAssemblies'

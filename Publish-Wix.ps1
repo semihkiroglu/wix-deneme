@@ -23,7 +23,7 @@ param(
     [switch]$Discover,
     [switch]$Validate,
     [string]$ManifestDir = '',
-    [string]$FeedUrl = 'https://nuget.example.internal/v3/index.json',
+    [string]$FeedUrl = '',
     [string]$ApiKey = '',
     [string]$StateDir = 'artifacts',
     [string]$GitHubRepository = 'wixtoolset/wix',
@@ -481,6 +481,9 @@ function Invoke-WixDiscovery {
 if ($MyInvocation.InvocationName -ne '.') {
     try {
         $auth = Get-FeedAuth -User $FeedUser -Password $FeedPassword
+        if (($Discover -or ($ManifestDir -and -not $Validate)) -and -not (Get-Trimmed $FeedUrl)) {
+            throw '-Discover and publish require -FeedUrl (the Jenkins job forwards FEED_URL)'
+        }
         if ($Discover) {
             $decisions = @(Invoke-WixDiscovery -StateDir $StateDir -FeedUrl $FeedUrl -GitHubRepository $GitHubRepository -GitHubApiBase $GitHubApiBase -MinVersion $MinVersion -Auth $auth -OutFile $OutFile)
             Write-Output ('# discovery feed ' + $FeedUrl + ' min ' + $MinVersion)

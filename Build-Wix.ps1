@@ -46,20 +46,23 @@ function Invoke-Native([string]$Executable, [string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "$Executable failed with exit code $LASTEXITCODE" }
 }
 
-function Invoke-Upstream([string[]]$Commands) {
+function New-UpstreamBatch([string[]]$Commands) {
     $batch = Join-Path $env:TEMP ('wix-' + [Guid]::NewGuid().ToString('N') + '.cmd')
     $lines = @('@echo off', "call `"$env:CTECH_VSDEVCMD`" -no_logo -arch=amd64", 'if errorlevel 1 exit /b 1')
     foreach ($command in $Commands) { $lines += @($command, 'if errorlevel 1 exit /b 1') }
     [IO.File]::WriteAllLines($batch, $lines + 'exit /b 0')
+    return $batch
+}
+
+function Invoke-Upstream([string[]]$Commands) {
+    $batch = New-UpstreamBatch $Commands
     try { Invoke-Native 'cmd.exe' @('/d','/c',$batch) } finally { Remove-Item $batch -Force }
 }
 
 function Invoke-UpstreamResult([string[]]$Commands) {
-    $batch = Join-Path $env:TEMP ('wix-' + [Guid]::NewGuid().ToString('N') + '.cmd')
-    $lines = @('@echo off', "call `"$env:CTECH_VSDEVCMD`" -no_logo -arch=amd64", 'if errorlevel 1 exit /b 1')
-    foreach ($command in $Commands) { $lines += @($command, 'if errorlevel 1 exit /b 1') }
-    [IO.File]::WriteAllLines($batch, $lines + 'exit /b 0')
-    try { & cmd.exe @('/d','/c',$batch); return $LASTEXITCODE } finally { Remove-Item $batch -Force }
+    $batch = New-UpstreamBatch $Commands
+    # Out-Host keeps the chain output in the console/log without polluting the exit-code capture.
+    try { & cmd.exe @('/d','/c',$batch) | Out-Host; return $LASTEXITCODE } finally { Remove-Item $batch -Force }
 }
 
 function Get-TrxState([string]$TrxPath) {
@@ -100,7 +103,7 @@ function Assert-TrxConsistent($State, [string]$TrxPath, [string[]]$ExpectedOutco
 
 function Start-TestServices {
     # The COM+ partition scenario needs these services; containers can start them, while the Windows Firewall
-    # and 'Server' services cannot run in a process-isolated container at all (docs/container-test-notes.md).
+    # and 'Server' services cannot run in a process-isolated container at all.
     foreach ($name in @('COMSysApp','MSDTC')) {
         if ((Get-Service -Name $name -ErrorAction SilentlyContinue).Status -ne 'Running') {
             try { Start-Service -Name $name -ErrorAction Stop; Write-Host "Test service started: $name" }
@@ -218,8 +221,8 @@ public static class PortableIdentity {
 
 # MsiE2E fixtures that need Windows services a process-isolated container cannot start: Windows Firewall
 # (mpssvc/BFE) and 'Server'/LanmanServer (SMB backed, needed for the ADSI machine-context assertions), plus
-# the COM+ partitions scenario that COMSysApp+MSDTC mitigate. Keep identical to docs/container-test-notes.md;
-# any failure outside this list breaks the build.
+# the COM+ partitions scenario that COMSysApp+MSDTC mitigate. This list is the authority; any failure
+# outside it breaks the build.
 $AllowedContainerFailures = @(
     'WixToolsetTest.MsiE2E.FirewallExtensionTests.CanInstallAndUninstallFirewallRulesPackagedByDifferentModules',
     'WixToolsetTest.MsiE2E.FirewallExtensionTests.CanInstallAndUninstallFirewallRulesWithInterfaces',
@@ -322,9 +325,8 @@ try {
     if ($LASTEXITCODE -ne 0 -or $actualTag -ne $Tag) { throw 'Upstream source is not the requested release tag' }
     Set-InternalVersionTemplates $source
     Set-UpstreamNuGetSource $source
+    # NuGetAudit/EOL warning suppressions already live in the image's MSBuild.rsp (Install-BuildEnv.ps1).
     $env:RuntimeTestsEnabled='true'; $env:WixOfficialBuild='false'; $env:SignBuild='false'; $env:NUGET_XMLDOC_MODE='skip'
-    $rsp=Join-Path (Split-Path $env:CTECH_MSBUILD) 'MSBuild.rsp'
-    [IO.File]::AppendAllText($rsp,"`r`n-p:NuGetAudit=false`r`n-p:CheckEolTargetFramework=false`r`n-warnAsMessage:NU1901,NU1902,NU1903,NU1904,NETSDK1138`r`n")
     Invoke-Native 'reg.exe' @('add','HKLM\Software\Policies\Microsoft\Windows\Installer','/t','REG_SZ','/v','Logging','/d','voicewarmupx','/f')
     Invoke-Native 'reg.exe' @('add','HKLM\Software\WOW6432Node\Policies\Microsoft\Windows\Installer','/t','REG_SZ','/v','Logging','/d','voicewarmupx','/f')
     # Upstream LongPathFixture passes msi.dll an 8.3 short name for files over MAX_PATH (LongPathUtil.CreateOrGetShortPath); container volumes create no aliases by default, so MSI database creation over MAX_PATH fails with 1631.
@@ -365,7 +367,7 @@ try {
     $wixState = $null
     if ($testExit -ne 0) {
         # Windows containers cannot start the Windows Firewall and 'Server' services, so the MsiE2E fixtures
-        # that need them are allowed to fail; any other failure still breaks the build (docs/container-test-notes.md).
+        # that need them are allowed to fail; any other failure still breaks the build.
         if (-not (Test-Path $burnTrx)) { throw 'Burn E2E results missing after the test chain aborted' }
         $burnState = Get-TrxState $burnTrx
         $burnFailed = @(Assert-TrxConsistent $burnState $burnTrx)
@@ -402,7 +404,7 @@ try {
     Write-ReleaseManifest $artifacts $Tag $sha $version
     $allowed=@('src/internal/SetBuildNumber/SomeVerInfo.props.pp','src/internal/SetBuildNumber/Directory.Packages.props.pp','src/internal/SetBuildNumber/global.json.pp','nuget.config')
     $changed=@(& git.exe diff HEAD --name-only)
-    # The three templates always change; nuget.config changes only when the substitution target differs from the upstream source (a no-op in the CI smoke), so three is legitimate.
+    # The three templates always change; nuget.config changes only when the substitution target differs from the upstream source, so three is legitimate.
     if ($LASTEXITCODE -ne 0 -or @($changed | Where-Object { $_ -notin $allowed }).Count -or $changed.Count -lt 3) { throw 'Unexpected upstream source modification' }
     # `git diff` never reports untracked paths, so the working tree is cross-checked too; only generated output may be untracked.
     $status=@(& git.exe status --porcelain=v1 --untracked-files=all)

@@ -1,0 +1,41 @@
+name: Probe Hyper-V container isolation
+
+# One-off capability probe for the nightly pipeline: can a Hyper-V isolated Windows container
+# (own kernel -> mpssvc/LanmanServer services start) run on this runner? Process isolation is
+# the default and cannot start those services, which is why 39 MsiE2E tests need an allowlist.
+# workflow_dispatch only; no event payload is consumed, so no injection surface.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: windows-2025
+    steps:
+      - name: Host hypervisor facts
+        shell: pwsh
+        run: |
+          Write-Host '--- systeminfo: Hyper-V lines ---'
+          systeminfo | Select-String 'Hyper-V'
+          Write-Host '--- optional feature state ---'
+          try { (Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-All).State }
+          catch { Write-Host ('feature query failed: ' + $_.Exception.Message) }
+          Write-Host '--- docker default isolation ---'
+          docker info --format 'isolated-default={{.Isolation}} ostype={{.OSType}} kernel={{.KernelVersion}}'
+
+      - name: "Hyper-V container: base image + services + storage-opt"
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          docker run --rm --isolation=hyperv --storage-opt size=10GB mcr.microsoft.com/windows/server:ltsc2022 cmd /c "ver & net start mpssvc & net start lanmanserver & sc query mpssvc | findstr STATE & sc query lanmanserver | findstr STATE"
+          Write-Host "docker exit code: $LASTEXITCODE"
+
+      - name: "Hyper-V container: host volume round-trip"
+        if: always()
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          New-Item -ItemType Directory -Force C:\probe-hv | Out-Null
+          docker run --rm --isolation=hyperv -v C:\probe-hv:C:\output mcr.microsoft.com/windows/server:ltsc2022 cmd /c "echo ok > C:\output\probe.txt"
+          Write-Host "docker exit code: $LASTEXITCODE"
+          if (Test-Path C:\probe-hv\probe.txt) { Write-Host ('VOLUME OK: ' + (Get-Content C:\probe-hv\probe.txt)) } else { Write-Host 'VOLUME FAIL: probe.txt not on host' }
